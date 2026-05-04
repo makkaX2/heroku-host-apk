@@ -344,6 +344,7 @@ public class MainActivity extends AppCompatActivity {
         writeFile(new File(support, "ld.so.preload"), "");
         writeFile(new File(support, "nosudo"), "#!/bin/sh\nexec \"$@\"\n");
         writeFile(new File(support, "userland_profile.sh"), "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n");
+        writeFile(new File(support, "version"), "Linux version 6.1.0 (userland@android) #1 SMP\n");
         new File(support, "nosudo").setExecutable(true, false);
 
         writeExecutableScript(new File(rootfsDir, "usr/local/bin/id"), "#!/bin/sh\n/support/common/busybox id \"$@\"\n");
@@ -470,6 +471,14 @@ public class MainActivity extends AppCompatActivity {
 
     private Map<String, String> prootEnv() {
         Map<String, String> env = new HashMap<>();
+        File statFile = new File(rootfsDir, "support/stat8");
+        File uptimeFile = new File(rootfsDir, "support/uptime");
+        File versionFile = new File(rootfsDir, "support/version");
+        String procBindings = "";
+        if (statFile.exists()) procBindings += " -b " + statFile.getAbsolutePath() + ":/proc/stat";
+        if (uptimeFile.exists()) procBindings += " -b " + uptimeFile.getAbsolutePath() + ":/proc/uptime";
+        if (versionFile.exists()) procBindings += " -b " + versionFile.getAbsolutePath() + ":/proc/version";
+
         env.put("LD_LIBRARY_PATH", supportDir.getAbsolutePath());
         env.put("LIB_PATH", supportDir.getAbsolutePath());
         env.put("ROOT_PATH", baseDir.getAbsolutePath());
@@ -478,7 +487,7 @@ public class MainActivity extends AppCompatActivity {
         env.put("PROOT_TMP_DIR", new File(rootfsDir, "support").getAbsolutePath());
         env.put("PROOT_LOADER", new File(supportDir, "loader").getAbsolutePath());
         env.put("PROOT_LOADER_32", new File(supportDir, "loader32").getAbsolutePath());
-        env.put("EXTRA_BINDINGS", "-b " + getExternalFilesDir(null).getAbsolutePath() + ":/storage/internal");
+        env.put("EXTRA_BINDINGS", "-b " + getExternalFilesDir(null).getAbsolutePath() + ":/storage/internal" + procBindings);
         env.put("OS_VERSION", System.getProperty("os.version", "4.0.0"));
         return env;
     }

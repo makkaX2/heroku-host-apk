@@ -3,6 +3,7 @@ build/
 app/build/
 *.log
 *.apk
+!HerokuHost-by-ziwupa-debug.apk
 local.properties
 .idea/
 *.iml

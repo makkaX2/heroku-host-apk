@@ -2,6 +2,20 @@
 
 Android mini-UserLAnd style installer for Heroku Userbot.
 
+## Download
+
+APK is in the repository root:
+
+```text
+HerokuHost-by-ziwupa-debug.apk
+```
+
+Latest release download:
+
+```text
+https://github.com/ziwupa/heroku-host-apk/releases/latest
+```
+
 Features:
 
 - Downloads and extracts Ubuntu Base rootfs.
@@ -23,4 +37,10 @@ Debug APK output:
 
 ```text
 app/build/outputs/apk/debug/app-debug.apk
+```
+
+Copy APK to repo root after building:
+
+```bash
+cp app/build/outputs/apk/debug/app-debug.apk HerokuHost-by-ziwupa-debug.apk
 ```
