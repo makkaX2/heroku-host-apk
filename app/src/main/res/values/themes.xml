@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.ZovHost" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/zov_yellow</item>
+        <item name="colorPrimaryVariant">@color/zov_yellow</item>
+        <item name="colorOnPrimary">@color/zov_bg</item>
+        <item name="android:statusBarColor">@color/zov_bg</item>
+        <item name="android:navigationBarColor">@color/zov_bg</item>
+        <item name="android:windowBackground">@color/zov_bg</item>
+    </style>
+</resources>
