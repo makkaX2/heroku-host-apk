@@ -47,6 +47,7 @@ public class MainActivity extends AppCompatActivity {
     private PowerManager.WakeLock wakeLock;
     private boolean waitingForInlineBot = false;
     private boolean manualStop = false;
+    private boolean botAutoRestartEnabled = false;
     private Thread metricsThread;
     private long lastCpuTotal = 0;
     private long lastCpuIdle = 0;
@@ -676,13 +677,17 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        manualStop = false;
+        botAutoRestartEnabled = true;
         startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd /root/Heroku && " +
             hotfixInlineTokenCommand() + " && " +
             hotfixInfoCommand() + " && " +
-            ".venv/bin/python -u -m heroku --no-web --root", true);
+            ".venv/bin/python -u -m heroku --no-web --root", true, false, true);
     }
 
     private void startTerminalSession() {
+        manualStop = false;
+        botAutoRestartEnabled = false;
         startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
             "cd /root/Heroku 2>/dev/null || cd /root && " +
             "echo '[TERMINAL] Type commands below and press SEND' && /bin/sh -i", true);
@@ -734,6 +739,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess) {
+        startProcess(command, interactive, openSupportOnSuccess, false);
+    }
+
+    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart) {
         runTask(() -> {
             acquireWakeLock();
             startHostMetricsWriter();
@@ -757,10 +766,16 @@ public class MainActivity extends AppCompatActivity {
             pumpOutput(currentProcess.getInputStream());
             int code = currentProcess.waitFor();
             log("[EXIT] code " + code);
+            currentProcess = null;
             if (!interactive) log("[DONE] Command finished");
             if (code == 0 && openSupportOnSuccess) {
                 log("[INFO] Opening support chat @herokuapk");
                 runOnUiThread(this::openSupportChat);
+            }
+            if (interactive && autoRestart && botAutoRestartEnabled && !manualStop) {
+                log("[INFO] Bot process exited. Restarting in 3 seconds...");
+                try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+                startInteractiveBot();
             }
             releaseWakeLock();
         });
@@ -796,16 +811,19 @@ public class MainActivity extends AppCompatActivity {
             OutputStream os = currentProcess.getOutputStream();
             os.write((text + "\n").getBytes());
             os.flush();
-            log("[INPUT] " + text);
+            log("[INPUT] sent");
         } catch (Exception e) {
             log("[INPUT ERROR] " + e.getMessage());
         }
     }
 
     private void stopCurrentProcess() {
+        manualStop = true;
+        botAutoRestartEnabled = false;
         if (currentProcess != null) {
             currentProcess.destroy();
             log("[INFO] Process stopped");
+            currentProcess = null;
         }
         releaseWakeLock();
     }
