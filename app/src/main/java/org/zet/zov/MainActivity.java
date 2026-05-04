@@ -1,5 +1,6 @@
 package org.zet.zov;
 
+import android.app.ActivityManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -45,7 +46,13 @@ public class MainActivity extends AppCompatActivity {
     private File supportDir;
     private PowerManager.WakeLock wakeLock;
     private boolean waitingForInlineBot = false;
+    private boolean manualStop = false;
+    private Thread metricsThread;
+    private long lastCpuTotal = 0;
+    private long lastCpuIdle = 0;
+    private double lastCpuPercent = -1;
     private static final String SUPPORT_URL = "https://t.me/herokuapk";
+    private static final int MAX_LOG_CHARS = 90000;
 
     private static final String UBUNTU_BASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/";
 
@@ -73,6 +80,7 @@ public class MainActivity extends AppCompatActivity {
         baseDir.mkdirs();
         supportDir.mkdirs();
         requestBackgroundWorkPermission();
+        startHostMetricsWriter();
 
         installLinuxBtn.setOnClickListener(v -> runTask(this::installLinux));
         installHerokuBtn.setOnClickListener(v -> runTask(this::installHeroku));
@@ -143,10 +151,106 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void appendOutput(String msg) {
+        String clean = filterLogText(msg);
+        if (clean.isEmpty()) return;
         runOnUiThread(() -> {
-            logConsole.append(msg);
+            logConsole.append(clean);
+            if (logConsole.length() > MAX_LOG_CHARS) {
+                CharSequence text = logConsole.getText();
+                logConsole.setText(text.subSequence(text.length() - MAX_LOG_CHARS, text.length()));
+            }
             logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
         });
+    }
+
+    private String filterLogText(String msg) {
+        String clean = msg.replaceAll("\\u001B\\[[;\\d]*[ -/]*[@-~]", "");
+        String[] lines = clean.split("(?<=\\n)", -1);
+        StringBuilder out = new StringBuilder();
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("Requirement already satisfied:")) continue;
+            if (trimmed.startsWith("Using cached ")) continue;
+            if (trimmed.startsWith("Stored in directory:")) continue;
+            if (trimmed.startsWith("Building wheel for ")) continue;
+            if (trimmed.startsWith("Created wheel for ")) continue;
+            out.append(line);
+        }
+        return out.toString();
+    }
+
+    private void startHostMetricsWriter() {
+        if (metricsThread != null && metricsThread.isAlive()) return;
+        metricsThread = new Thread(() -> {
+            while (true) {
+                try {
+                    writeHostInfo();
+                    Thread.sleep(2000);
+                } catch (Exception ignored) {
+                    try { Thread.sleep(5000); } catch (InterruptedException ignored2) {}
+                }
+            }
+        });
+        metricsThread.setDaemon(true);
+        metricsThread.start();
+    }
+
+    private void writeHostInfo() throws Exception {
+        supportDir.mkdirs();
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        long total = 0;
+        long avail = 0;
+        if (am != null) {
+            am.getMemoryInfo(mi);
+            total = mi.totalMem;
+            avail = mi.availMem;
+        }
+        long usedMb = Math.max(total - avail, 0) / 1024 / 1024;
+        long totalMb = Math.max(total, 0) / 1024 / 1024;
+        double cpu = sampleCpuPercent();
+        String cpuPercent = cpu >= 0 ? String.format(java.util.Locale.US, "%.1f%%", cpu) : "N/A";
+        int cores = Runtime.getRuntime().availableProcessors();
+        String json = "{"
+            + "\"host\":\"herokuapk\"," 
+            + "\"cpu_usage\":\"" + cpuPercent + "\"," 
+            + "\"ram_usage\":\"" + usedMb + " MB\"," 
+            + "\"cpu\":\"" + cores + " (" + cores + ") core(-s); " + cpuPercent + " total\"," 
+            + "\"ram_total\":\"" + totalMb + " MB\""
+            + "}";
+        writeFile(new File(supportDir, "host_info.json"), json);
+    }
+
+    private double sampleCpuPercent() {
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream("/proc/stat")))) {
+            String line = br.readLine();
+            if (line == null || !line.startsWith("cpu ")) return lastCpuPercent;
+            String[] parts = line.trim().split("\\s+");
+            long user = Long.parseLong(parts[1]);
+            long nice = Long.parseLong(parts[2]);
+            long system = Long.parseLong(parts[3]);
+            long idle = Long.parseLong(parts[4]);
+            long iowait = parts.length > 5 ? Long.parseLong(parts[5]) : 0;
+            long irq = parts.length > 6 ? Long.parseLong(parts[6]) : 0;
+            long softirq = parts.length > 7 ? Long.parseLong(parts[7]) : 0;
+            long steal = parts.length > 8 ? Long.parseLong(parts[8]) : 0;
+            long idleAll = idle + iowait;
+            long total = user + nice + system + idle + iowait + irq + softirq + steal;
+            if (lastCpuTotal == 0) {
+                lastCpuTotal = total;
+                lastCpuIdle = idleAll;
+                return lastCpuPercent;
+            }
+            long totalDelta = total - lastCpuTotal;
+            long idleDelta = idleAll - lastCpuIdle;
+            lastCpuTotal = total;
+            lastCpuIdle = idleAll;
+            if (totalDelta <= 0) return lastCpuPercent;
+            lastCpuPercent = Math.max(0, Math.min(100, (totalDelta - idleDelta) * 100.0 / totalDelta));
+            return lastCpuPercent;
+        } catch (Exception ignored) {
+            return lastCpuPercent;
+        }
     }
 
     private String assetArch() {
@@ -351,6 +455,7 @@ public class MainActivity extends AppCompatActivity {
         writeFile(new File(support, "nosudo"), "#!/bin/sh\nexec \"$@\"\n");
         writeFile(new File(support, "userland_profile.sh"), "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n");
         writeFile(new File(support, "version"), "Linux version 6.1.0 (userland@android) #1 SMP\n");
+        writeHostInfo();
         new File(support, "nosudo").setExecutable(true, false);
 
         writeExecutableScript(new File(rootfsDir, "usr/local/bin/id"), "#!/bin/sh\n/support/common/busybox id \"$@\"\n");
@@ -521,7 +626,7 @@ public class MainActivity extends AppCompatActivity {
         env.put("PROOT_TMP_DIR", new File(rootfsDir, "support").getAbsolutePath());
         env.put("PROOT_LOADER", new File(supportDir, "loader").getAbsolutePath());
         env.put("PROOT_LOADER_32", new File(supportDir, "loader32").getAbsolutePath());
-        env.put("EXTRA_BINDINGS", "-b " + getExternalFilesDir(null).getAbsolutePath() + ":/storage/internal" + procBindings);
+        env.put("EXTRA_BINDINGS", "-b " + getExternalFilesDir(null).getAbsolutePath() + ":/storage/internal -b " + supportDir.getAbsolutePath() + "/host_info.json:/support/common/host_info.json" + procBindings);
         env.put("OS_VERSION", System.getProperty("os.version", "4.0.0"));
         return env;
     }
@@ -609,12 +714,16 @@ public class MainActivity extends AppCompatActivity {
             "s = s.replace('platform = utils.get_named_platform()', 'platform = \"herokuapk\"')\n" +
             "s = s.replace('platform_emoji = utils.get_named_platform_emoji()', 'platform_emoji = \"📱\"')\n" +
             "marker = '        data = {\\n'\n" +
-            "helpers = '''        def _herokuapk_safe_cpu_percent():\\n            try:\\n                return psutil.cpu_percent(interval=0.15)\\n            except Exception:\\n                return 0.0\\n\\n        def _herokuapk_safe_cpu_usage():\\n            try:\\n                return utils.get_cpu_usage()\\n            except Exception:\\n                return f\"{_herokuapk_safe_cpu_percent()}%\"\\n\\n        def _herokuapk_safe_ram_usage():\\n            try:\\n                return f\"{utils.get_ram_usage()} MB\"\\n            except Exception:\\n                try:\\n                    data = {}\\n                    with open(\"/proc/meminfo\", \"r\") as f:\\n                        for line in f:\\n                            key, value = line.split(\":\", 1)\\n                            data[key] = int(value.strip().split()[0])\\n                    total = data.get(\"MemTotal\", 0)\\n                    available = data.get(\"MemAvailable\", 0)\\n                    used_mb = max(total - available, 0) // 1024\\n                    return f\"{used_mb} MB\"\\n                except Exception:\\n                    return \"0 MB\"\\n\\n        def _herokuapk_safe_cpu():\\n            logical = psutil.cpu_count() or 1\\n            physical = psutil.cpu_count(logical=False) or logical\\n            return f\"{physical} ({logical}) core(-s); {_herokuapk_safe_cpu_percent()}% total\"\\n\\n'''\n" +
+            "helpers = '''        def _herokuapk_host_info():\\n            try:\\n                import json\\n                return json.loads(Path(\"/support/common/host_info.json\").read_text())\\n            except Exception:\\n                return {}\\n\\n        def _herokuapk_host_value(key, default):\\n            return _herokuapk_host_info().get(key, default)\\n\\n        def _herokuapk_safe_cpu_percent():\\n            try:\\n                return psutil.cpu_percent(interval=0.15)\\n            except Exception:\\n                return 0.0\\n\\n        def _herokuapk_safe_cpu_usage():\\n            try:\\n                return utils.get_cpu_usage()\\n            except Exception:\\n                return f\"{_herokuapk_safe_cpu_percent()}%\"\\n\\n        def _herokuapk_safe_ram_usage():\\n            try:\\n                return f\"{utils.get_ram_usage()} MB\"\\n            except Exception:\\n                try:\\n                    data = {}\\n                    with open(\"/proc/meminfo\", \"r\") as f:\\n                        for line in f:\\n                            key, value = line.split(\":\", 1)\\n                            data[key] = int(value.strip().split()[0])\\n                    total = data.get(\"MemTotal\", 0)\\n                    available = data.get(\"MemAvailable\", 0)\\n                    used_mb = max(total - available, 0) // 1024\\n                    return f\"{used_mb} MB\"\\n                except Exception:\\n                    return \"0 MB\"\\n\\n        def _herokuapk_safe_cpu():\\n            logical = psutil.cpu_count() or 1\\n            physical = psutil.cpu_count(logical=False) or logical\\n            return f\"{physical} ({logical}) core(-s); {_herokuapk_safe_cpu_percent()}% total\"\\n\\n'''\n" +
             "if '_herokuapk_safe_cpu_percent' not in s and marker in s:\n    s = s.replace(marker, helpers + marker)\n" +
-            "s = s.replace('\\\"cpu_usage\\\": utils.get_cpu_usage(),', '\\\"cpu_usage\\\": _herokuapk_safe_cpu_usage(),')\n" +
-            "s = s.replace('\\\"ram_usage\\\": f\"{utils.get_ram_usage()} MB\",', '\\\"ram_usage\\\": _herokuapk_safe_ram_usage(),')\n" +
-            "s = s.replace('\\\"hostname\\\": lib_platform.node(),', '\\\"hostname\\\": \"herokuapk\",')\n" +
-            "s = s.replace('\\\"cpu\\\": f\"{psutil.cpu_count(logical=False)} ({psutil.cpu_count()}) core(-s); {psutil.cpu_percent()}% total\",', '\\\"cpu\\\": _herokuapk_safe_cpu(),')\n" +
+            "s = s.replace('\\\"cpu_usage\\\": utils.get_cpu_usage(),', '\\\"cpu_usage\\\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),')\n" +
+            "s = s.replace('\\\"cpu_usage\\\": _herokuapk_safe_cpu_usage(),', '\\\"cpu_usage\\\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),')\n" +
+            "s = s.replace('\\\"ram_usage\\\": f\"{utils.get_ram_usage()} MB\",', '\\\"ram_usage\\\": _herokuapk_host_value(\"ram_usage\", _herokuapk_safe_ram_usage()),')\n" +
+            "s = s.replace('\\\"ram_usage\\\": _herokuapk_safe_ram_usage(),', '\\\"ram_usage\\\": _herokuapk_host_value(\"ram_usage\", _herokuapk_safe_ram_usage()),')\n" +
+            "s = s.replace('\\\"hostname\\\": lib_platform.node(),', '\\\"hostname\\\": _herokuapk_host_value(\"host\", \"herokuapk\"),')\n" +
+            "s = s.replace('\\\"hostname\\\": \"herokuapk\",', '\\\"hostname\\\": _herokuapk_host_value(\"host\", \"herokuapk\"),')\n" +
+            "s = s.replace('\\\"cpu\\\": f\"{psutil.cpu_count(logical=False)} ({psutil.cpu_count()}) core(-s); {psutil.cpu_percent()}% total\",', '\\\"cpu\\\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),')\n" +
+            "s = s.replace('\\\"cpu\\\": _herokuapk_safe_cpu(),', '\\\"cpu\\\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),')\n" +
             "p.write_text(s)\n" +
             "PY\n" +
             ".venv/bin/python /root/Heroku/hotfix_info.py";
@@ -627,6 +736,8 @@ public class MainActivity extends AppCompatActivity {
     private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess) {
         runTask(() -> {
             acquireWakeLock();
+            startHostMetricsWriter();
+            try { writeHostInfo(); } catch (Exception ignored) {}
             if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
                 log("[ERROR] Linux is not installed. Press INSTALL LINUX first.");
                 return;
