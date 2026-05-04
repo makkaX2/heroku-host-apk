@@ -10,7 +10,7 @@ android {
         applicationId "org.zet.zov"
         minSdk 24
         targetSdk 28
-        versionCode 6
+        versionCode 7
         versionName "1.0"
     }
 

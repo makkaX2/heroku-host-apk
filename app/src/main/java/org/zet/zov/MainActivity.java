@@ -30,6 +30,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URL;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
@@ -435,33 +436,61 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String[] prootCommand(String command) {
-        return new String[] {
-            supportDir.getAbsolutePath() + "/proot",
-            "-r", rootfsDir.getAbsolutePath(),
-            "-v", "-1",
-            "-p",
-            "--sysvipc",
-            "-H",
-            "-0",
-            "-l",
-            "-L",
-            "-b", "/sys",
-            "-b", "/dev",
-            "-b", "/proc",
-            "-b", "/data",
-            "-b", "/mnt",
-            "-b", "/proc/mounts:/etc/mtab",
-            "-b", "/:/host-rootfs",
-            "-b", new File(rootfsDir, "support").getAbsolutePath() + ":/support",
-            "-b", new File(rootfsDir, "support/nosudo").getAbsolutePath() + ":/usr/local/bin/sudo",
-            "-b", new File(rootfsDir, "support/userland_profile.sh").getAbsolutePath() + ":/etc/profile.d/userland_profile.sh",
-            "-b", new File(rootfsDir, "support/ld.so.preload").getAbsolutePath() + ":/etc/ld.so.preload",
-            "-b", supportDir.getAbsolutePath() + ":/support/common",
-            "-w", "/root",
-            shellPath(),
-            "-c",
-            command
-        };
+        ArrayList<String> args = new ArrayList<>();
+        args.add(supportDir.getAbsolutePath() + "/proot");
+        args.add("-r");
+        args.add(rootfsDir.getAbsolutePath());
+        args.add("-v");
+        args.add("-1");
+        args.add("-p");
+        args.add("--sysvipc");
+        args.add("-H");
+        args.add("-0");
+        args.add("-l");
+        args.add("-L");
+        args.add("-b");
+        args.add("/sys");
+        args.add("-b");
+        args.add("/dev");
+        args.add("-b");
+        args.add("/proc");
+        args.add("-b");
+        args.add("/data");
+        args.add("-b");
+        args.add("/mnt");
+        args.add("-b");
+        args.add("/proc/mounts:/etc/mtab");
+        args.add("-b");
+        args.add("/:/host-rootfs");
+        addProcFakeBinds(args);
+        args.add("-b");
+        args.add(new File(rootfsDir, "support").getAbsolutePath() + ":/support");
+        args.add("-b");
+        args.add(new File(rootfsDir, "support/nosudo").getAbsolutePath() + ":/usr/local/bin/sudo");
+        args.add("-b");
+        args.add(new File(rootfsDir, "support/userland_profile.sh").getAbsolutePath() + ":/etc/profile.d/userland_profile.sh");
+        args.add("-b");
+        args.add(new File(rootfsDir, "support/ld.so.preload").getAbsolutePath() + ":/etc/ld.so.preload");
+        args.add("-b");
+        args.add(supportDir.getAbsolutePath() + ":/support/common");
+        args.add("-w");
+        args.add("/root");
+        args.add(shellPath());
+        args.add("-c");
+        args.add(command);
+        return args.toArray(new String[0]);
+    }
+
+    private void addProcFakeBinds(ArrayList<String> args) {
+        addBindIfExists(args, new File(rootfsDir, "support/stat8"), "/proc/stat");
+        addBindIfExists(args, new File(rootfsDir, "support/uptime"), "/proc/uptime");
+        addBindIfExists(args, new File(rootfsDir, "support/version"), "/proc/version");
+    }
+
+    private void addBindIfExists(ArrayList<String> args, File source, String target) {
+        if (!source.exists()) return;
+        args.add("-b");
+        args.add(source.getAbsolutePath() + ":" + target);
     }
 
     private String shellPath() {
