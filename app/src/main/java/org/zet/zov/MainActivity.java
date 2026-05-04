@@ -560,6 +560,7 @@ public class MainActivity extends AppCompatActivity {
             ".venv/bin/python -m pip install --upgrade pip wheel setuptools && " +
             ".venv/bin/python -m pip install -r requirements.txt && " +
             hotfixInlineTokenCommand() + " && " +
+            hotfixInfoCommand() + " && " +
             ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false, true);
     }
 
@@ -572,6 +573,7 @@ public class MainActivity extends AppCompatActivity {
 
         startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd /root/Heroku && " +
             hotfixInlineTokenCommand() + " && " +
+            hotfixInfoCommand() + " && " +
             ".venv/bin/python -u -m heroku --no-web --root", true);
     }
 
@@ -597,6 +599,25 @@ public class MainActivity extends AppCompatActivity {
             "p.write_text(s)\n" +
             "PY\n" +
             ".venv/bin/python /root/Heroku/hotfix_inline.py";
+    }
+
+    private String hotfixInfoCommand() {
+        return "cat > /root/Heroku/hotfix_info.py <<'PY'\n" +
+            "from pathlib import Path\n" +
+            "p = Path('heroku/modules/heroku_info.py')\n" +
+            "s = p.read_text()\n" +
+            "s = s.replace('platform = utils.get_named_platform()', 'platform = \"herokuapk\"')\n" +
+            "s = s.replace('platform_emoji = utils.get_named_platform_emoji()', 'platform_emoji = \"📱\"')\n" +
+            "marker = '        data = {\\n'\n" +
+            "helpers = '''        def _herokuapk_safe_cpu_percent():\\n            try:\\n                return psutil.cpu_percent(interval=0.15)\\n            except Exception:\\n                return 0.0\\n\\n        def _herokuapk_safe_cpu_usage():\\n            try:\\n                return utils.get_cpu_usage()\\n            except Exception:\\n                return f\"{_herokuapk_safe_cpu_percent()}%\"\\n\\n        def _herokuapk_safe_ram_usage():\\n            try:\\n                return f\"{utils.get_ram_usage()} MB\"\\n            except Exception:\\n                try:\\n                    data = {}\\n                    with open(\"/proc/meminfo\", \"r\") as f:\\n                        for line in f:\\n                            key, value = line.split(\":\", 1)\\n                            data[key] = int(value.strip().split()[0])\\n                    total = data.get(\"MemTotal\", 0)\\n                    available = data.get(\"MemAvailable\", 0)\\n                    used_mb = max(total - available, 0) // 1024\\n                    return f\"{used_mb} MB\"\\n                except Exception:\\n                    return \"0 MB\"\\n\\n        def _herokuapk_safe_cpu():\\n            logical = psutil.cpu_count() or 1\\n            physical = psutil.cpu_count(logical=False) or logical\\n            return f\"{physical} ({logical}) core(-s); {_herokuapk_safe_cpu_percent()}% total\"\\n\\n'''\n" +
+            "if '_herokuapk_safe_cpu_percent' not in s and marker in s:\n    s = s.replace(marker, helpers + marker)\n" +
+            "s = s.replace('\\\"cpu_usage\\\": utils.get_cpu_usage(),', '\\\"cpu_usage\\\": _herokuapk_safe_cpu_usage(),')\n" +
+            "s = s.replace('\\\"ram_usage\\\": f\"{utils.get_ram_usage()} MB\",', '\\\"ram_usage\\\": _herokuapk_safe_ram_usage(),')\n" +
+            "s = s.replace('\\\"hostname\\\": lib_platform.node(),', '\\\"hostname\\\": \"herokuapk\",')\n" +
+            "s = s.replace('\\\"cpu\\\": f\"{psutil.cpu_count(logical=False)} ({psutil.cpu_count()}) core(-s); {psutil.cpu_percent()}% total\",', '\\\"cpu\\\": _herokuapk_safe_cpu(),')\n" +
+            "p.write_text(s)\n" +
+            "PY\n" +
+            ".venv/bin/python /root/Heroku/hotfix_info.py";
     }
 
     private void startProcess(String command, boolean interactive) {
