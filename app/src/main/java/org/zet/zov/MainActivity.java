@@ -45,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
     private File supportDir;
     private PowerManager.WakeLock wakeLock;
     private boolean waitingForInlineBot = false;
+    private static final String SUPPORT_URL = "https://t.me/herokuapk";
 
     private static final String UBUNTU_BASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/";
 
@@ -63,6 +64,7 @@ public class MainActivity extends AppCompatActivity {
         Button terminalBtn = findViewById(R.id.terminalBtn);
         Button stopBtn = findViewById(R.id.stopBtn);
         Button copyLogsBtn = findViewById(R.id.copyLogsBtn);
+        Button supportBtn = findViewById(R.id.supportBtn);
         Button sendInputBtn = findViewById(R.id.sendInputBtn);
 
         baseDir = new File(getFilesDir(), "userland");
@@ -78,6 +80,7 @@ public class MainActivity extends AppCompatActivity {
         terminalBtn.setOnClickListener(v -> startTerminalSession());
         stopBtn.setOnClickListener(v -> stopCurrentProcess());
         copyLogsBtn.setOnClickListener(v -> copyLogs());
+        supportBtn.setOnClickListener(v -> openSupportChat());
         sendInputBtn.setOnClickListener(v -> sendInput());
 
         log("[INFO] Heroku Host ready");
@@ -557,7 +560,7 @@ public class MainActivity extends AppCompatActivity {
             ".venv/bin/python -m pip install --upgrade pip wheel setuptools && " +
             ".venv/bin/python -m pip install -r requirements.txt && " +
             hotfixInlineTokenCommand() + " && " +
-            ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false);
+            ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false, true);
     }
 
     private void startInteractiveBot() {
@@ -597,6 +600,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startProcess(String command, boolean interactive) {
+        startProcess(command, interactive, false);
+    }
+
+    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess) {
         runTask(() -> {
             acquireWakeLock();
             if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
@@ -619,6 +626,10 @@ public class MainActivity extends AppCompatActivity {
             int code = currentProcess.waitFor();
             log("[EXIT] code " + code);
             if (!interactive) log("[DONE] Command finished");
+            if (code == 0 && openSupportOnSuccess) {
+                log("[INFO] Opening support chat @herokuapk");
+                runOnUiThread(this::openSupportChat);
+            }
             releaseWakeLock();
         });
     }
@@ -671,6 +682,16 @@ public class MainActivity extends AppCompatActivity {
         ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
         clipboard.setPrimaryClip(ClipData.newPlainText("Heroku Host logs", logConsole.getText().toString()));
         log("[INFO] Logs copied to clipboard");
+    }
+
+    private void openSupportChat() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(SUPPORT_URL));
+            startActivity(intent);
+        } catch (Exception e) {
+            log("[WARN] Could not open support chat: " + e.getMessage());
+            log("[INFO] Support: " + SUPPORT_URL);
+        }
     }
 
     private File inlineBotFile() {

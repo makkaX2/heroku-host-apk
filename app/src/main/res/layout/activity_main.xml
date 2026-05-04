@@ -102,6 +102,16 @@
             android:backgroundTint="#FFF1AE"
             android:fontFamily="monospace"
             android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/supportBtn"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="✈ SUPPORT @HEROKUAPK"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#8BD3FF"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <ScrollView
