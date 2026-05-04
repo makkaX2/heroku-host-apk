@@ -59,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
         Button installLinuxBtn = findViewById(R.id.installLinuxBtn);
         Button installHerokuBtn = findViewById(R.id.installHerokuBtn);
         Button startBotBtn = findViewById(R.id.startBotBtn);
+        Button terminalBtn = findViewById(R.id.terminalBtn);
         Button stopBtn = findViewById(R.id.stopBtn);
         Button copyLogsBtn = findViewById(R.id.copyLogsBtn);
         Button sendInputBtn = findViewById(R.id.sendInputBtn);
@@ -73,6 +74,7 @@ public class MainActivity extends AppCompatActivity {
         installLinuxBtn.setOnClickListener(v -> runTask(this::installLinux));
         installHerokuBtn.setOnClickListener(v -> runTask(this::installHeroku));
         startBotBtn.setOnClickListener(v -> startInteractiveBot());
+        terminalBtn.setOnClickListener(v -> startTerminalSession());
         stopBtn.setOnClickListener(v -> stopCurrentProcess());
         copyLogsBtn.setOnClickListener(v -> copyLogs());
         sendInputBtn.setOnClickListener(v -> sendInput());
@@ -539,6 +541,12 @@ public class MainActivity extends AppCompatActivity {
         startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd /root/Heroku && " +
             hotfixInlineTokenCommand() + " && " +
             ".venv/bin/python -u -m heroku --no-web --root", true);
+    }
+
+    private void startTerminalSession() {
+        startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
+            "cd /root/Heroku 2>/dev/null || cd /root && " +
+            "echo '[TERMINAL] Type commands below and press SEND' && /bin/sh -i", true);
     }
 
     private String hotfixInlineTokenCommand() {

@@ -74,6 +74,16 @@
             android:textStyle="bold" />
 
         <Button
+            android:id="@+id/terminalBtn"
+            android:layout_width="match_parent"
+            android:layout_height="50dp"
+            android:text="TERMINAL"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FFF1AE"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <Button
             android:id="@+id/stopBtn"
             android:layout_width="match_parent"
             android:layout_height="50dp"
