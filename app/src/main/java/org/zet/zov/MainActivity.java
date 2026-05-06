@@ -12,10 +12,14 @@ import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
 import android.system.Os;
+import android.view.View;
 import android.view.WindowManager;
+import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -32,7 +36,9 @@ import java.io.OutputStream;
 import java.net.URL;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.zip.GZIPInputStream;
 
@@ -40,20 +46,27 @@ public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
     private ScrollView logScroll;
     private EditText inputField;
+    private Spinner sessionSpinner;
+    private View actionPanel;
+    private ArrayAdapter<String> sessionAdapter;
+    private final ArrayList<String> sessionProfiles = new ArrayList<>();
     private Process currentProcess;
     private File baseDir;
     private File rootfsDir;
     private File supportDir;
     private PowerManager.WakeLock wakeLock;
     private boolean waitingForInlineBot = false;
+    private boolean waitingForSessionName = false;
     private boolean manualStop = false;
     private boolean botAutoRestartEnabled = false;
+    private boolean botSupervisorActive = false;
     private Thread metricsThread;
     private long lastCpuTotal = 0;
     private long lastCpuIdle = 0;
     private double lastCpuPercent = -1;
     private static final String SUPPORT_URL = "https://t.me/herokuapk";
     private static final int MAX_LOG_CHARS = 90000;
+    private static final String PATCH_MARKER = ".herokuapk_patch_v30";
 
     private static final String UBUNTU_BASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/";
 
@@ -66,6 +79,10 @@ public class MainActivity extends AppCompatActivity {
         logConsole = findViewById(R.id.logConsole);
         logScroll = findViewById(R.id.logScroll);
         inputField = findViewById(R.id.inputField);
+        sessionSpinner = findViewById(R.id.sessionSpinner);
+        actionPanel = findViewById(R.id.actionPanel);
+        Button menuToggleBtn = findViewById(R.id.menuToggleBtn);
+        Button menuCloseBtn = findViewById(R.id.menuCloseBtn);
         Button installLinuxBtn = findViewById(R.id.installLinuxBtn);
         Button installHerokuBtn = findViewById(R.id.installHerokuBtn);
         Button startBotBtn = findViewById(R.id.startBotBtn);
@@ -73,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
         Button stopBtn = findViewById(R.id.stopBtn);
         Button copyLogsBtn = findViewById(R.id.copyLogsBtn);
         Button supportBtn = findViewById(R.id.supportBtn);
+        Button addSessionBtn = findViewById(R.id.addSessionBtn);
         Button sendInputBtn = findViewById(R.id.sendInputBtn);
 
         baseDir = new File(getFilesDir(), "userland");
@@ -82,7 +100,11 @@ public class MainActivity extends AppCompatActivity {
         supportDir.mkdirs();
         requestBackgroundWorkPermission();
         startHostMetricsWriter();
+        loadSessionProfiles();
+        setupSessionMenu();
 
+        menuToggleBtn.setOnClickListener(v -> toggleMenu());
+        menuCloseBtn.setOnClickListener(v -> closeMenu());
         installLinuxBtn.setOnClickListener(v -> runTask(this::installLinux));
         installHerokuBtn.setOnClickListener(v -> runTask(this::installHeroku));
         startBotBtn.setOnClickListener(v -> startInteractiveBot());
@@ -90,10 +112,34 @@ public class MainActivity extends AppCompatActivity {
         stopBtn.setOnClickListener(v -> stopCurrentProcess());
         copyLogsBtn.setOnClickListener(v -> copyLogs());
         supportBtn.setOnClickListener(v -> openSupportChat());
+        addSessionBtn.setOnClickListener(v -> askSessionName());
         sendInputBtn.setOnClickListener(v -> sendInput());
 
         log("[INFO] Heroku Host ready");
-        log("[INFO] Step 1: INSTALL LINUX");
+        log("[INFO] Account profile: " + selectedSessionName());
+        log("[INFO] Step 1: LINUX, then HEROKU, then START");
+    }
+
+    private void toggleMenu() {
+        if (actionPanel == null) return;
+        if (actionPanel.getVisibility() == View.VISIBLE) {
+            closeMenu();
+            return;
+        }
+        actionPanel.setVisibility(View.VISIBLE);
+        actionPanel.post(() -> {
+            actionPanel.setTranslationX(-actionPanel.getWidth());
+            actionPanel.animate().translationX(0).setDuration(180).start();
+        });
+    }
+
+    private void closeMenu() {
+        if (actionPanel == null || actionPanel.getVisibility() != View.VISIBLE) return;
+        actionPanel.animate()
+            .translationX(-actionPanel.getWidth())
+            .setDuration(160)
+            .withEndAction(() -> actionPanel.setVisibility(View.GONE))
+            .start();
     }
 
     private interface Task { void run() throws Exception; }
@@ -180,6 +226,155 @@ public class MainActivity extends AppCompatActivity {
         return out.toString();
     }
 
+    private File sessionsFile() {
+        return new File(baseDir, "sessions.txt");
+    }
+
+    private void loadSessionProfiles() {
+        sessionProfiles.clear();
+        sessionProfiles.add("main");
+        try {
+            File file = sessionsFile();
+            if (file.exists()) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file)))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        String profile = sanitizeSessionName(line);
+                        if (!profile.isEmpty() && !sessionProfiles.contains(profile)) sessionProfiles.add(profile);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        Collections.sort(sessionProfiles.subList(1, sessionProfiles.size()));
+    }
+
+    private void setupSessionMenu() {
+        sessionAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, sessionProfiles);
+        sessionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sessionSpinner.setAdapter(sessionAdapter);
+        String saved = loadSelectedSessionName();
+        int index = sessionProfiles.indexOf(saved);
+        if (index >= 0) sessionSpinner.setSelection(index);
+        sessionSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                try { saveSelectedSessionName(sessionProfiles.get(position)); } catch (Exception ignored) {}
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
+    }
+
+    private File selectedSessionFile() {
+        return new File(baseDir, "selected_session.txt");
+    }
+
+    private String loadSelectedSessionName() {
+        try {
+            File file = selectedSessionFile();
+            if (!file.exists()) return "main";
+            byte[] data = new byte[(int) file.length()];
+            try (FileInputStream in = new FileInputStream(file)) {
+                int read = in.read(data);
+                if (read <= 0) return "main";
+            }
+            String selected = sanitizeSessionName(new String(data));
+            return selected.isEmpty() ? "main" : selected;
+        } catch (Exception ignored) {
+            return "main";
+        }
+    }
+
+    private void saveSelectedSessionName(String profile) throws Exception {
+        writeFile(selectedSessionFile(), sanitizeSessionName(profile) + "\n");
+    }
+
+    private void saveSessionProfiles() throws Exception {
+        StringBuilder data = new StringBuilder();
+        for (String profile : sessionProfiles) data.append(profile).append('\n');
+        writeFile(sessionsFile(), data.toString());
+    }
+
+    private String selectedSessionName() {
+        Object selected = sessionSpinner == null ? null : sessionSpinner.getSelectedItem();
+        String profile = sanitizeSessionName(selected == null ? "main" : selected.toString());
+        return profile.isEmpty() ? "main" : profile;
+    }
+
+    private String sanitizeSessionName(String input) {
+        if (input == null) return "";
+        String name = input.trim().toLowerCase(java.util.Locale.US).replace("@", "");
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < name.length(); i++) {
+            char ch = name.charAt(i);
+            boolean ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+            if (ok) out.append(ch);
+        }
+        return out.toString();
+    }
+
+    private String herokuDirName() {
+        String profile = selectedSessionName();
+        return profile.equals("main") ? "Heroku" : "Heroku-" + profile;
+    }
+
+    private String herokuPath() {
+        return "/root/" + herokuDirName();
+    }
+
+    private File herokuRootfsDir() {
+        return new File(rootfsDir, "root/" + herokuDirName());
+    }
+
+    private boolean isHerokuInstalledForSelectedAccount() {
+        File dir = herokuRootfsDir();
+        return new File(dir, "heroku").exists()
+            && fileExistsOrSymlink(new File(dir, ".venv/bin/python"))
+                || (new File(dir, "heroku").exists() && fileExistsOrSymlink(new File(dir, ".venv/bin/python3")));
+    }
+
+    private boolean fileExistsOrSymlink(File file) {
+        try {
+            return file.exists() || Files.isSymbolicLink(file.toPath());
+        } catch (Exception ignored) {
+            return file.exists();
+        }
+    }
+
+    private void askSessionName() {
+        waitingForSessionName = true;
+        runOnUiThread(() -> {
+            inputField.setText("");
+            inputField.setHint("session name, e.g. second");
+        });
+        log("[SETUP] Type new account profile name and press SEND.");
+    }
+
+    private void saveNewSession(String rawName) {
+        String profile = sanitizeSessionName(rawName);
+        if (profile.isEmpty()) {
+            log("[ERROR] Invalid session name. Use a-z, 0-9, _ or -.");
+            askSessionName();
+            return;
+        }
+        try {
+            if (!sessionProfiles.contains(profile)) {
+                sessionProfiles.add(profile);
+                Collections.sort(sessionProfiles.subList(1, sessionProfiles.size()));
+                saveSessionProfiles();
+                setupSessionMenu();
+            }
+            sessionSpinner.setSelection(sessionProfiles.indexOf(profile));
+            saveSelectedSessionName(profile);
+            waitingForSessionName = false;
+            log("[OK] Account profile selected: " + profile);
+            log("[INFO] For another Telegram account press HEROKU, then START and login with its phone.");
+        } catch (Exception e) {
+            log("[ERROR] Failed to save session: " + e.getMessage());
+        }
+    }
+
     private void startHostMetricsWriter() {
         if (metricsThread != null && metricsThread.isAlive()) return;
         metricsThread = new Thread(() -> {
@@ -250,8 +445,51 @@ public class MainActivity extends AppCompatActivity {
             lastCpuPercent = Math.max(0, Math.min(100, (totalDelta - idleDelta) * 100.0 / totalDelta));
             return lastCpuPercent;
         } catch (Exception ignored) {
-            return lastCpuPercent;
+            return sampleTopCpuPercent();
         }
+    }
+
+    private double sampleTopCpuPercent() {
+        try {
+            Process process = new ProcessBuilder("/system/bin/top", "-b", "-n", "1").redirectErrorStream(true).start();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String lower = line.toLowerCase(java.util.Locale.US);
+                    if (lower.contains("%cpu") || lower.startsWith("cpu") || lower.contains(" cpu ")) {
+                        double parsed = parseFirstPercentNumber(line);
+                        if (parsed >= 0) {
+                            lastCpuPercent = Math.max(0, Math.min(100, parsed));
+                            return lastCpuPercent;
+                        }
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (Exception ignored) {}
+        return lastCpuPercent;
+    }
+
+    private double parseFirstPercentNumber(String line) {
+        ArrayList<Double> values = new ArrayList<>();
+        for (int i = 0; i < line.length(); i++) {
+            if (line.charAt(i) != '%') continue;
+            int start = i - 1;
+            while (start >= 0) {
+                char ch = line.charAt(start);
+                if ((ch >= '0' && ch <= '9') || ch == '.') {
+                    start--;
+                } else {
+                    break;
+                }
+            }
+            if (start + 1 < i) {
+                try { values.add(Double.parseDouble(line.substring(start + 1, i))); } catch (Exception ignored) {}
+            }
+        }
+        if (values.isEmpty()) return -1;
+        if (values.get(0) > 100 && values.size() > 2) return values.get(1) + values.get(2);
+        return values.get(0);
     }
 
     private String assetArch() {
@@ -447,6 +685,7 @@ public class MainActivity extends AppCompatActivity {
         new File(rootfsDir, "tmp").mkdirs();
         File support = new File(rootfsDir, "support");
         support.mkdirs();
+        new File(support, "common").mkdirs();
 
         writeFile(new File(rootfsDir, "etc/resolv.conf"), "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
         writeFile(new File(rootfsDir, "etc/hosts"), "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n");
@@ -658,16 +897,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void installHeroku() {
+        String dirName = herokuDirName();
+        String path = herokuPath();
         startProcess("export HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color DEBIAN_FRONTEND=noninteractive && " +
             "dpkg --remove --force-remove-reinstreq --force-depends dbus libpam-systemd systemd-resolved networkd-dispatcher dbus-user-session dconf-service dconf-gsettings-backend libgtk-3-common gsettings-desktop-schemas libgtk-3-bin libgtk-3-0t64 at-spi2-core libdecor-0-plugin-1-gtk 2>/dev/null || true && " +
             "apt update && apt install -y --no-install-recommends ca-certificates coreutils git python3 python3-pip python3-venv build-essential libcairo2 libmagic1 openssl && " +
-            "cd /root && if [ ! -d Heroku ]; then git clone https://github.com/coddrago/Heroku; fi && " +
-            "cd /root/Heroku && python3 -m venv .venv && " +
+            "cd /root && if [ ! -d " + dirName + " ]; then git clone https://github.com/coddrago/Heroku " + dirName + "; fi && " +
+            "cd " + path + " && python3 -m venv .venv && " +
             ".venv/bin/python -m pip install --upgrade pip wheel setuptools && " +
             ".venv/bin/python -m pip install -r requirements.txt && " +
-            hotfixInlineTokenCommand() + " && " +
-            hotfixInfoCommand() + " && " +
-            ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false, true);
+            ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false, true, false, "INSTALL HEROKU");
     }
 
     private void startInteractiveBot() {
@@ -677,24 +916,116 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        if (!isHerokuInstalledForSelectedAccount()) {
+            log("[ERROR] Heroku is not installed for account profile: " + selectedSessionName());
+            log("[INFO] Press INSTALL HEROKU first for this account profile.");
+            return;
+        }
+
+        if (botSupervisorActive || (currentProcess != null && currentProcess.isAlive())) {
+            log("[INFO] Userbot is already running. Press STOP PROCESS first if you want to restart it.");
+            return;
+        }
+
         manualStop = false;
         botAutoRestartEnabled = true;
-        startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd /root/Heroku && " +
-            hotfixInlineTokenCommand() + " && " +
-            hotfixInfoCommand() + " && " +
-            ".venv/bin/python -u -m heroku --no-web --root", true, false, true);
+        botSupervisorActive = true;
+        String path = herokuPath();
+        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKUAPK=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd " + path + " && " +
+            herokuApkPatchCommand() + " && " +
+            ".venv/bin/python -u -m heroku --no-web --root", true, false, true, "START BOT", true);
+    }
+
+    private String cleanupStaleHerokuCommand() {
+        return "if [ -x /usr/bin/python3 ]; then /usr/bin/python3 - <<'PY'\n" +
+            "import os, signal, time\n" +
+            "me = os.getpid()\n" +
+            "parent = os.getppid()\n" +
+            "targets = []\n" +
+            "for name in os.listdir('/proc'):\n" +
+            "    if not name.isdigit():\n" +
+            "        continue\n" +
+            "    pid = int(name)\n" +
+            "    if pid in (me, parent):\n" +
+            "        continue\n" +
+            "    try:\n" +
+            "        comm = open(f'/proc/{pid}/comm', 'r').read().strip().lower()\n" +
+            "    except Exception:\n" +
+            "        continue\n" +
+            "    if 'python' not in comm:\n" +
+            "        continue\n" +
+            "    try:\n" +
+            "        cmd = open(f'/proc/{pid}/cmdline', 'rb').read().replace(b'\\0', b' ').decode('utf-8', 'ignore')\n" +
+            "    except Exception:\n" +
+            "        continue\n" +
+            "    low = cmd.lower()\n" +
+            "    if 'python' in low and (' -m heroku' in low or 'heroku.__main__' in low):\n" +
+            "        targets.append(pid)\n" +
+            "for sig in (signal.SIGTERM, signal.SIGKILL):\n" +
+            "    for pid in targets:\n" +
+            "        try:\n" +
+            "            os.kill(pid, sig)\n" +
+            "        except Exception:\n" +
+            "            pass\n" +
+            "    time.sleep(0.4)\n" +
+            "PY\n" +
+            "fi; true";
     }
 
     private void startTerminalSession() {
         manualStop = false;
         botAutoRestartEnabled = false;
-        startProcess("export HOME=/root PATH=/root/Heroku/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
-            "cd /root/Heroku 2>/dev/null || cd /root && " +
-            "echo '[TERMINAL] Type commands below and press SEND' && /bin/sh -i", true);
+        String path = herokuPath();
+        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
+            "cd " + path + " 2>/dev/null || cd /root && " +
+            "echo '[TERMINAL] Type commands below and press SEND' && /bin/sh -i", true, false, false, "TERMINAL");
+    }
+
+    private String herokuApkPatchCommand() {
+        return "if [ ! -f " + PATCH_MARKER + " ]; then " +
+            hotfixInlineTokenCommand() + " >hotfix_inline.log 2>&1 && " +
+            hotfixInfoCommand() + " >hotfix_info.log 2>&1 && " +
+            hotfixMetricsCommand() + " >hotfix_metrics.log 2>&1 && " +
+            hotfixRestartCommand() + " >hotfix_restart.log 2>&1 && " +
+            hotfixRestoreHelpPingCommand() + " >hotfix_restore_help_ping.log 2>&1 && " +
+            hotfixDeveloperCommand() + " >hotfix_developer.log 2>&1 && " +
+            "touch " + PATCH_MARKER + "; fi";
+    }
+
+    private String hotfixRestoreHelpPingCommand() {
+        return "(git checkout -- heroku/modules/help.py heroku/modules/test.py 2>/dev/null || true)";
+    }
+
+    private String hotfixDeveloperCommand() {
+        return "cat > hotfix_developer.py <<'PY'\n" +
+            "from pathlib import Path\n" +
+            "init = Path('heroku/__init__.py')\n" +
+            "if init.exists():\n" +
+            "    s = init.read_text()\n" +
+            "    s = s.replace('__ForkAuthor__ = \"Codrago\"', '__ForkAuthor__ = \"@ziwupa\"')\n" +
+            "    s = s.replace('__maintainer__ = \"developer\"', '__maintainer__ = \"@ziwupa\"')\n" +
+            "    init.write_text(s)\n" +
+            "for path in Path('heroku/langpacks').glob('*.yml'):\n" +
+            "    lines = []\n" +
+            "    for line in path.read_text().splitlines():\n" +
+            "        if line.lstrip().startswith('ratko:'):\n" +
+            "            indent = line[:len(line) - len(line.lstrip())]\n" +
+            "            line = indent + 'ratko: \"{} <b>{}.{}.{}</b>\\\\n\\\\n<tg-emoji emoji-id=5310296284874159738>⚪️</tg-emoji> <b>Developer: <a href=\\\"https://t.me/ziwupa\\\">@ziwupa</a></b>\"'\n" +
+            "        lines.append(line)\n" +
+            "    path.write_text('\\n'.join(lines) + '\\n')\n" +
+            "settings = Path('heroku/modules/settings.py')\n" +
+            "s = settings.read_text()\n" +
+            "if 'async def herokucmd' not in s:\n" +
+            "    marker = '\\n    @loader.command()\\n    async def blacklist'\n" +
+            "    insert = '\\n    @loader.command()\\n    async def herokucmd(self, message: Message):\\n        await self.ratkocmd(message)\\n'\n" +
+            "    s = s.replace(marker, insert + marker)\n" +
+            "settings.write_text(s)\n" +
+            "PY\n" +
+            ".venv/bin/python hotfix_developer.py";
     }
 
     private String hotfixInlineTokenCommand() {
-        return "cat > /root/Heroku/hotfix_inline.py <<'PY'\n" +
+        return "cat > hotfix_inline.py <<'PY'\n" +
             "from pathlib import Path\n" +
             "p = Path('heroku/inline/token_obtainment.py')\n" +
             "s = p.read_text()\n" +
@@ -704,23 +1035,27 @@ public class MainActivity extends AppCompatActivity {
             "mp = Path('heroku/main.py')\n" +
             "m = mp.read_text()\n" +
             "needle = 'existing = db.get(\"heroku.inline\", \"custom_bot\", False)\\n        except Exception:'\n" +
-            "insert = 'existing = db.get(\"heroku.inline\", \"custom_bot\", False)\\n            env_bot = os.environ.get(\"HEROKU_CUSTOM_INLINE_BOT\")\\n            if env_bot:\\n                db.set(\"heroku.inline\", \"custom_bot\", env_bot.strip().lstrip(\"@\"))\\n                db.set(\"heroku.inline\", \"bot_token\", None)\\n                existing = env_bot\\n        except Exception:'\n" +
-            "if needle in m and 'HEROKU_CUSTOM_INLINE_BOT' not in m:\n    mp.write_text(m.replace(needle, insert))\n" +
+            "old_insert = 'existing = db.get(\"heroku.inline\", \"custom_bot\", False)\\n            env_bot = os.environ.get(\"HEROKU_CUSTOM_INLINE_BOT\")\\n            if env_bot:\\n                db.set(\"heroku.inline\", \"custom_bot\", env_bot.strip().lstrip(\"@\"))\\n                db.set(\"heroku.inline\", \"bot_token\", None)\\n                existing = env_bot\\n        except Exception:'\n" +
+            "insert = 'existing = db.get(\"heroku.inline\", \"custom_bot\", False)\\n            env_bot = os.environ.get(\"HEROKU_CUSTOM_INLINE_BOT\")\\n            if env_bot:\\n                env_bot = env_bot.strip().lstrip(\"@\")\\n                if existing != env_bot:\\n                    db.set(\"heroku.inline\", \"custom_bot\", env_bot)\\n                    db.set(\"heroku.inline\", \"bot_token\", None)\\n                existing = env_bot\\n        except Exception:'\n" +
+            "m = m.replace(old_insert, insert)\n" +
+            "if needle in m and 'HEROKU_CUSTOM_INLINE_BOT' not in m:\n    m = m.replace(needle, insert)\n" +
+            "mp.write_text(m)\n" +
             "p.write_text(s)\n" +
             "PY\n" +
-            ".venv/bin/python /root/Heroku/hotfix_inline.py";
+            ".venv/bin/python hotfix_inline.py";
     }
 
     private String hotfixInfoCommand() {
-        return "cat > /root/Heroku/hotfix_info.py <<'PY'\n" +
+        return "cat > hotfix_info.py <<'PY'\n" +
             "from pathlib import Path\n" +
+            "import re\n" +
             "p = Path('heroku/modules/heroku_info.py')\n" +
             "s = p.read_text()\n" +
-            "s = s.replace('platform = utils.get_named_platform()', 'platform = \"herokuapk\"')\n" +
-            "s = s.replace('platform_emoji = utils.get_named_platform_emoji()', 'platform_emoji = \"📱\"')\n" +
-            "marker = '        data = {\\n'\n" +
-            "helpers = '''        def _herokuapk_host_info():\\n            try:\\n                import json\\n                return json.loads(Path(\"/support/common/host_info.json\").read_text())\\n            except Exception:\\n                return {}\\n\\n        def _herokuapk_host_value(key, default):\\n            return _herokuapk_host_info().get(key, default)\\n\\n        def _herokuapk_safe_cpu_percent():\\n            try:\\n                return psutil.cpu_percent(interval=0.15)\\n            except Exception:\\n                return 0.0\\n\\n        def _herokuapk_safe_cpu_usage():\\n            try:\\n                return utils.get_cpu_usage()\\n            except Exception:\\n                return f\"{_herokuapk_safe_cpu_percent()}%\"\\n\\n        def _herokuapk_safe_ram_usage():\\n            try:\\n                return f\"{utils.get_ram_usage()} MB\"\\n            except Exception:\\n                try:\\n                    data = {}\\n                    with open(\"/proc/meminfo\", \"r\") as f:\\n                        for line in f:\\n                            key, value = line.split(\":\", 1)\\n                            data[key] = int(value.strip().split()[0])\\n                    total = data.get(\"MemTotal\", 0)\\n                    available = data.get(\"MemAvailable\", 0)\\n                    used_mb = max(total - available, 0) // 1024\\n                    return f\"{used_mb} MB\"\\n                except Exception:\\n                    return \"0 MB\"\\n\\n        def _herokuapk_safe_cpu():\\n            logical = psutil.cpu_count() or 1\\n            physical = psutil.cpu_count(logical=False) or logical\\n            return f\"{physical} ({logical}) core(-s); {_herokuapk_safe_cpu_percent()}% total\"\\n\\n'''\n" +
-            "if '_herokuapk_safe_cpu_percent' not in s and marker in s:\n    s = s.replace(marker, helpers + marker)\n" +
+            "s = s.replace('platform = utils.get_named_platform()', 'platform = \\\"herokuapk\\\"')\n" +
+            "s = s.replace('platform_emoji = utils.get_named_platform_emoji()', 'platform_emoji = \\\"📱\\\"')\n" +
+            "marker = '        data = {\\\\n'\n" +
+            "helpers = '''        def _herokuapk_host_info():\\n            try:\\n                import json\\n                return json.loads(Path(\"/support/common/host_info.json\").read_text())\\n            except Exception:\\n                return {}\\n\\n        def _herokuapk_host_value(key, default):\\n            return _herokuapk_host_info().get(key, default)\\n\\n        def _herokuapk_safe_cpu_usage():\\n            try:\\n                return utils.get_cpu_usage()\\n            except Exception:\\n                return \"N/A\"\\n\\n        def _herokuapk_safe_ram_usage():\\n            try:\\n                return f\"{utils.get_ram_usage()} MB\"\\n            except Exception:\\n                return \"0 MB\"\\n\\n        def _herokuapk_safe_cpu():\\n            try:\\n                return _herokuapk_host_value(\"cpu\", \"N/A\")\\n            except Exception:\\n                return \"N/A\"\\n\\n'''\n" +
+            "if 'def _herokuapk_host_value' not in s and marker in s:\n    s = s.replace(marker, helpers + marker)\n" +
             "s = s.replace('\\\"cpu_usage\\\": utils.get_cpu_usage(),', '\\\"cpu_usage\\\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),')\n" +
             "s = s.replace('\\\"cpu_usage\\\": _herokuapk_safe_cpu_usage(),', '\\\"cpu_usage\\\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),')\n" +
             "s = s.replace('\\\"ram_usage\\\": f\"{utils.get_ram_usage()} MB\",', '\\\"ram_usage\\\": _herokuapk_host_value(\"ram_usage\", _herokuapk_safe_ram_usage()),')\n" +
@@ -730,55 +1065,187 @@ public class MainActivity extends AppCompatActivity {
             "s = s.replace('\\\"cpu\\\": f\"{psutil.cpu_count(logical=False)} ({psutil.cpu_count()}) core(-s); {psutil.cpu_percent()}% total\",', '\\\"cpu\\\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),')\n" +
             "s = s.replace('\\\"cpu\\\": _herokuapk_safe_cpu(),', '\\\"cpu\\\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),')\n" +
             "p.write_text(s)\n" +
+            "up = Path('heroku/utils/platform.py')\n" +
+            "u = up.read_text()\n" +
+            "helper = '\\n\\ndef _herokuapk_platform_host_info():\\n    try:\\n        import json\\n        return json.loads(open(\\\"/support/common/host_info.json\\\").read())\\n    except Exception:\\n        return {}\\n'\n" +
+            "u = u.replace('return json.loads(Path(\\\"/support/common/host_info.json\\\").read_text())', 'return json.loads(open(\\\"/support/common/host_info.json\\\").read())')\n" +
+            "if 'def _herokuapk_platform_host_info' not in u:\n    u += helper\n" +
+            "cpu_func = 'def get_cpu_usage():\\n    data = _herokuapk_platform_host_info()\\n    value = str(data.get(\\\"cpu_usage\\\", \\\"\\\")).replace(\\\"%\\\", \\\"\\\")\\n    if value and value != \\\"N/A\\\":\\n        return value\\n    return \\\"N/A\\\"\\n'\n" +
+            "ram_func = 'def get_ram_usage() -> float:\\n    data = _herokuapk_platform_host_info()\\n    value = str(data.get(\\\"ram_usage\\\", \\\"\\\")).replace(\\\" MB\\\", \\\"\\\")\\n    try:\\n        return round(float(value), 1)\\n    except Exception:\\n        return 0\\n'\n" +
+            "u = re.sub(r'def get_ram_usage\\(\\) -> float:.*?(?=\\n\\ndef get_cpu_usage)', ram_func, u, flags=re.S)\n" +
+            "u = re.sub(r'def get_cpu_usage\\(\\):.*?(?=\\n\\ninit_ts|\\n\\ndef get_ip_address|\\Z)', cpu_func, u, flags=re.S)\n" +
+            "up.write_text(u)\n" +
             "PY\n" +
-            ".venv/bin/python /root/Heroku/hotfix_info.py";
+            ".venv/bin/python hotfix_info.py";
+    }
+
+    private String hotfixMetricsCommand() {
+        return "cat > hotfix_metrics.py <<'PY'\n" +
+            "from pathlib import Path\n" +
+            "import re\n" +
+            "platform = Path('heroku/utils/platform.py')\n" +
+            "s = platform.read_text()\n" +
+            "ram_func = '''def get_ram_usage() -> float:\n    \"\"\"Returns current process tree memory usage in MB\"\"\"\n    try:\n        import psutil\n        current_process = psutil.Process(os.getpid())\n        mem = current_process.memory_info()[0] / 2.0**20\n        for child in current_process.children(recursive=True):\n            mem += child.memory_info()[0] / 2.0**20\n        return round(mem, 1)\n    except Exception:\n        return 0\n'''\n" +
+            "cpu_func = '''def get_cpu_usage():\n    try:\n        import psutil\n        current_process = psutil.Process(os.getpid())\n        cpu = current_process.cpu_percent(interval=0.1)\n        for child in current_process.children(recursive=True):\n            try:\n                cpu += child.cpu_percent(interval=0)\n            except Exception:\n                pass\n        return f\"{cpu:.2f}\"\n    except Exception:\n        return \"0.00\"\n'''\n" +
+            "s = re.sub(r'def get_ram_usage\\(\\) -> float:.*?(?=\\n\\ndef get_cpu_usage)', ram_func, s, flags=re.S)\n" +
+            "s = re.sub(r'def get_cpu_usage\\(\\):.*?(?=\\n\\ninit_ts|\\n\\ndef get_ip_address|\\Z)', cpu_func, s, flags=re.S)\n" +
+            "platform.write_text(s)\n" +
+            "info = Path('heroku/modules/heroku_info.py')\n" +
+            "t = info.read_text()\n" +
+            "t = t.replace('\"cpu_usage\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),', '\"cpu_usage\": _herokuapk_safe_cpu_usage(),')\n" +
+            "t = t.replace('\"ram_usage\": _herokuapk_host_value(\"ram_usage\", _herokuapk_safe_ram_usage()),', '\"ram_usage\": _herokuapk_safe_ram_usage(),')\n" +
+            "t = t.replace('\"cpu\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),', '\"cpu\": _herokuapk_safe_cpu(),')\n" +
+            "info.write_text(t)\n" +
+            "PY\n" +
+            ".venv/bin/python hotfix_metrics.py";
+    }
+
+    private String hotfixRestartCommand() {
+        return "cat > hotfix_restart.py <<'PY'\n" +
+            "from pathlib import Path\n" +
+            "p = Path('heroku/_internal.py')\n" +
+            "s = p.read_text()\n" +
+            "needle = 'def restart():\\n    if \"--sandbox\" in \" \".join(sys.argv):\\n        exit(0)\\n'\n" +
+            "insert = 'def restart():\\n    if os.environ.get(\"HEROKUAPK\") == \"1\":\\n        logging.getLogger().setLevel(logging.CRITICAL)\\n        print(\"Restarting...\")\\n        os.execl(sys.executable, sys.executable, \"-m\", \"heroku\", *sys.argv[1:])\\n\\n    if \"--sandbox\" in \" \".join(sys.argv):\\n        exit(0)\\n'\n" +
+            "if 'os.environ.get(\"HEROKUAPK\") == \"1\"' not in s and needle in s:\n    s = s.replace(needle, insert)\n" +
+            "p.write_text(s)\n" +
+            "PY\n" +
+            ".venv/bin/python hotfix_restart.py";
+    }
+
+    private String hotfixFinalCommand() {
+        return "cat > hotfix_final.py <<'PY'\n" +
+            "from pathlib import Path\n" +
+            "import re\n" +
+            "platform = Path('heroku/utils/platform.py')\n" +
+            "s = platform.read_text()\n" +
+            "ram_func = '''def get_ram_usage() -> float:\n    \"\"\"Returns current process tree memory usage in MB\"\"\"\n    try:\n        import psutil\n        current_process = psutil.Process(os.getpid())\n        mem = current_process.memory_info()[0] / 2.0**20\n        for child in current_process.children(recursive=True):\n            mem += child.memory_info()[0] / 2.0**20\n        return round(mem, 1)\n    except Exception:\n        return 0\n'''\n" +
+            "cpu_func = '''def get_cpu_usage():\n    try:\n        import psutil\n        current_process = psutil.Process(os.getpid())\n        cpu = current_process.cpu_percent(interval=0.1)\n        for child in current_process.children(recursive=True):\n            try:\n                cpu += child.cpu_percent(interval=0)\n            except Exception:\n                pass\n        return f\"{cpu:.2f}\"\n    except Exception:\n        return \"0.00\"\n'''\n" +
+            "s = re.sub(r'def get_ram_usage\\(\\) -> float:.*?(?=\\n\\ndef get_cpu_usage)', ram_func, s, flags=re.S)\n" +
+            "s = re.sub(r'def get_cpu_usage\\(\\):.*?(?=\\n\\ninit_ts|\\n\\ndef get_ip_address|\\Z)', cpu_func, s, flags=re.S)\n" +
+            "platform.write_text(s)\n" +
+            "info = Path('heroku/modules/heroku_info.py')\n" +
+            "t = info.read_text()\n" +
+            "t = t.replace('platform = utils.get_named_platform()', 'platform = \"herokuapk\"')\n" +
+            "t = t.replace('platform_emoji = utils.get_named_platform_emoji()', 'platform_emoji = \"📱\"')\n" +
+            "for old in [\n" +
+            "    '\"cpu_usage\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),',\n" +
+            "    '\"cpu_usage\": _herokuapk_safe_cpu_usage(),',\n" +
+            "]:\n    t = t.replace(old, '\"cpu_usage\": utils.get_cpu_usage(),')\n" +
+            "for old in [\n" +
+            "    '\"ram_usage\": _herokuapk_host_value(\"ram_usage\", _herokuapk_safe_ram_usage()),',\n" +
+            "    '\"ram_usage\": _herokuapk_safe_ram_usage(),',\n" +
+            "]:\n    t = t.replace(old, '\"ram_usage\": f\"{utils.get_ram_usage()} MB\",')\n" +
+            "for old in [\n" +
+            "    '\"cpu\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),',\n" +
+            "    '\"cpu\": _herokuapk_safe_cpu(),',\n" +
+            "    '\"cpu\": f\"{psutil.cpu_count(logical=False)} ({psutil.cpu_count()}) core(-s); {psutil.cpu_percent()}% total\",',\n" +
+            "]:\n    t = t.replace(old, '\"cpu\": f\"{psutil.cpu_count(logical=False) or psutil.cpu_count()} ({psutil.cpu_count()}) core(-s); {utils.get_cpu_usage()}% total\",')\n" +
+            "t = re.sub(r'\\\"ping\\\": .*?,', '\"ping\": getattr(self, \"_herokuapk_last_ping\", round((time.perf_counter_ns() - start) / 10**6, 3)),', t)\n" +
+            "needle = '        start = time.perf_counter_ns()\\n        banner_url, force_web_media = self._get_effective_banner()\\n'\n" +
+            "insert = '        start = time.perf_counter_ns()\\n        if \"{ping}\" in self._get_effective_info_template():\\n            ping_start = time.perf_counter_ns()\\n            try:\\n                message = await utils.answer(message, self.config[\"ping_emoji\"])\\n                self._herokuapk_last_ping = round((time.perf_counter_ns() - ping_start) / 10**6, 3)\\n            except Exception:\\n                self._herokuapk_last_ping = 0\\n        banner_url, force_web_media = self._get_effective_banner()\\n'\n" +
+            "if '_herokuapk_last_ping' not in t and needle in t:\n    t = t.replace(needle, insert)\n" +
+            "info.write_text(t)\n" +
+            "test = Path('heroku/modules/test.py')\n" +
+            "q = test.read_text()\n" +
+            "start_idx = q.find('    @loader.command()\\n    async def ping(')\n" +
+            "end_idx = q.find('    async def client_ready', start_idx)\n" +
+            "if start_idx != -1 and end_idx != -1:\n" +
+            "    simple_ping = '''    @loader.command()\n    async def ping(self, message: Message):\n        \"\"\"- Find out your userbot ping\"\"\"\n        start = time.perf_counter_ns()\n        msg = await utils.answer(message, self.config[\"ping_emoji\"])\n        ping = round((time.perf_counter_ns() - start) / 10**6, 3)\n        await utils.answer(msg, f\"<b>Ping:</b> <code>{ping}</code> ms\\n<b>Uptime:</b> <code>{utils.formatted_uptime()}</code>\")\n\n'''\n" +
+            "    q = q[:start_idx] + simple_ping + q[end_idx:]\n" +
+            "    test.write_text(q)\n" +
+            "help_file = Path('heroku/modules/help.py')\n" +
+            "h = help_file.read_text()\n" +
+            "start_idx = h.find('    @loader.command(\\n        ru_doc=\"[args] | Помощь')\n" +
+            "end_idx = h.find('    @loader.command(\\n        ru_doc=\"| Ссылка', start_idx)\n" +
+            "if start_idx != -1 and end_idx != -1:\n" +
+            "    simple_help = '''    @loader.command(\n        ru_doc=\"[args] | Помощь с вашими модулями!\",\n        ua_doc=\"[args] | допоможіть з вашими модулями!\",\n        de_doc=\"[args] | Hilfe mit deinen Modulen!\",\n    )\n    async def help(self, message: Message):\n        \"\"\"[args] | help with your modules!\"\"\"\n        args = utils.get_args_raw(message)\n        if args:\n            await self.modhelp(message, args)\n            return\n        lines = []\n        for mod in self.allmodules.modules:\n            if not getattr(mod, \"commands\", None):\n                continue\n            try:\n                name = mod.strings[\"name\"]\n            except Exception:\n                name = getattr(mod, \"name\", mod.__class__.__name__)\n            cmds = sorted(mod.commands.keys())\n            if cmds:\n                lines.append(f\"<b>{utils.escape_html(str(name))}</b>: <code>{'</code> <code>'.join(cmds)}</code>\")\n        text = \"<b>Heroku modules:</b>\\n\" + \"\\n\".join(lines)\n        await utils.answer(message, text[:3900])\n\n'''\n" +
+            "    h = h[:start_idx] + simple_help + h[end_idx:]\n" +
+            "    help_file.write_text(h)\n" +
+            "PY\n" +
+            ".venv/bin/python hotfix_final.py";
     }
 
     private void startProcess(String command, boolean interactive) {
-        startProcess(command, interactive, false);
+        startProcess(command, interactive, false, false, command, false);
     }
 
     private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess) {
-        startProcess(command, interactive, openSupportOnSuccess, false);
+        startProcess(command, interactive, openSupportOnSuccess, false, command, false);
     }
 
     private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart) {
+        startProcess(command, interactive, openSupportOnSuccess, autoRestart, command, false);
+    }
+
+    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart, String label) {
+        startProcess(command, interactive, openSupportOnSuccess, autoRestart, label, false);
+    }
+
+    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart, String label, boolean cleanupBeforeFirstRun) {
         runTask(() -> {
             acquireWakeLock();
             startHostMetricsWriter();
             try { writeHostInfo(); } catch (Exception ignored) {}
             if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
-                log("[ERROR] Linux is not installed. Press INSTALL LINUX first.");
+                log("[ERROR] Linux is not installed. Press LINUX first.");
                 return;
             }
             setupRootfs();
             repairRootfs();
             if (!testProotRuntime()) {
-                log("[ERROR] Linux rootfs is broken. Press INSTALL LINUX again.");
+                log("[ERROR] Linux rootfs is broken. Press LINUX again.");
+                if (autoRestart) botSupervisorActive = false;
                 return;
             }
-            log("[CMD] " + command);
-            ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
+            if (cleanupBeforeFirstRun) {
+                runCleanupBlocking();
+            }
+            boolean firstRun = true;
+            while (true) {
+                log((firstRun ? "[CMD] " : "[RESTART] ") + label);
+                ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
+                pb.directory(baseDir);
+                pb.environment().putAll(prootEnv());
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                currentProcess = process;
+                pumpOutput(process.getInputStream());
+                int code = process.waitFor();
+                if (currentProcess == process) currentProcess = null;
+                log("[EXIT] code " + code);
+                if (!interactive) log("[DONE] Command finished");
+                if (code == 0 && openSupportOnSuccess) {
+                    log("[INFO] Opening support chat @herokuapk");
+                    runOnUiThread(this::openSupportChat);
+                }
+                if (!(interactive && autoRestart && botAutoRestartEnabled && !manualStop)) break;
+                if (code == 126 || code == 127) {
+                    log("[ERROR] Startup command failed. Auto-restart stopped.");
+                    break;
+                }
+                if (code == 143 && manualStop) break;
+                log("[INFO] Userbot exited. Restarting in 3 seconds...");
+                try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+                firstRun = false;
+            }
+            if (autoRestart) botSupervisorActive = false;
+            releaseWakeLock();
+        });
+    }
+
+    private void runCleanupBlocking() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(prootCommand(cleanupStaleHerokuCommand()));
             pb.directory(baseDir);
             pb.environment().putAll(prootEnv());
             pb.redirectErrorStream(true);
-            currentProcess = pb.start();
-            pumpOutput(currentProcess.getInputStream());
-            int code = currentProcess.waitFor();
-            log("[EXIT] code " + code);
-            currentProcess = null;
-            if (!interactive) log("[DONE] Command finished");
-            if (code == 0 && openSupportOnSuccess) {
-                log("[INFO] Opening support chat @herokuapk");
-                runOnUiThread(this::openSupportChat);
-            }
-            if (interactive && autoRestart && botAutoRestartEnabled && !manualStop) {
-                log("[INFO] Bot process exited. Restarting in 3 seconds...");
-                try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
-                startInteractiveBot();
-            }
-            releaseWakeLock();
-        });
+            Process process = pb.start();
+            process.waitFor();
+            log("[INFO] Stale userbot processes cleaned");
+        } catch (Exception e) {
+            log("[WARN] Cleanup failed: " + e.getMessage());
+        }
     }
 
     private void pumpOutput(InputStream stream) {
@@ -803,6 +1270,11 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        if (waitingForSessionName) {
+            saveNewSession(text);
+            return;
+        }
+
         if (currentProcess == null) {
             log("[ERROR] No running process");
             return;
@@ -820,12 +1292,32 @@ public class MainActivity extends AppCompatActivity {
     private void stopCurrentProcess() {
         manualStop = true;
         botAutoRestartEnabled = false;
+        botSupervisorActive = false;
         if (currentProcess != null) {
             currentProcess.destroy();
+            try { currentProcess.destroyForcibly(); } catch (Exception ignored) {}
             log("[INFO] Process stopped");
             currentProcess = null;
         }
+        forceStopHerokuProcesses();
         releaseWakeLock();
+    }
+
+    private void forceStopHerokuProcesses() {
+        new Thread(() -> {
+            try {
+                if (!new File(supportDir, "proot").exists() || !new File(rootfsDir, "bin/sh").exists()) return;
+                ProcessBuilder pb = new ProcessBuilder(prootCommand(cleanupStaleHerokuCommand()));
+                pb.directory(baseDir);
+                pb.environment().putAll(prootEnv());
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                process.waitFor();
+                log("[INFO] Stale userbot processes cleaned");
+            } catch (Exception e) {
+                log("[WARN] Cleanup failed: " + e.getMessage());
+            }
+        }).start();
     }
 
     private void copyLogs() {
@@ -845,7 +1337,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private File inlineBotFile() {
-        return new File(baseDir, "inline_bot_username.txt");
+        String profile = selectedSessionName();
+        if (profile.equals("main")) return new File(baseDir, "inline_bot_username.txt");
+        return new File(baseDir, "inline_bot_username-" + profile + ".txt");
     }
 
     private String getInlineBotUsername() {
