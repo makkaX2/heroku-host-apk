@@ -49,6 +49,17 @@
             android:fontFamily="monospace"
             android:layout_marginBottom="12dp" />
 
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="status: checking..."
+            android:textColor="@color/zov_muted"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:gravity="center"
+            android:layout_marginBottom="10dp" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -96,6 +107,45 @@
                 android:textStyle="bold" />
         </LinearLayout>
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="6dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="TERMINAL OUTPUT"
+                android:textColor="@color/zov_yellow"
+                android:textSize="12sp"
+                android:fontFamily="monospace" />
+
+            <Button
+                android:id="@+id/followOutputBtn"
+                android:layout_width="118dp"
+                android:layout_height="38dp"
+                android:text="FOLLOW: ON"
+                android:textColor="@color/zov_bg"
+                android:backgroundTint="#FFF1AE"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/bottomBtn"
+                android:layout_width="88dp"
+                android:layout_height="38dp"
+                android:text="BOTTOM"
+                android:textColor="@color/zov_bg"
+                android:backgroundTint="@color/zov_yellow"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
         <ScrollView
             android:id="@+id/logScroll"
             android:layout_width="match_parent"
@@ -103,6 +153,8 @@
             android:layout_weight="1"
             android:background="@color/zov_panel"
             android:padding="12dp"
+            android:fillViewport="true"
+            android:overScrollMode="ifContentScrolls"
             android:layout_marginBottom="12dp">
             <TextView
                 android:id="@+id/logConsole"
@@ -112,7 +164,7 @@
                 android:textColor="@color/zov_white"
                 android:textSize="12sp"
                 android:fontFamily="monospace"
-                android:textIsSelectable="true" />
+                android:textIsSelectable="false" />
         </ScrollView>
 
         <LinearLayout
@@ -190,15 +242,103 @@
             android:textStyle="bold" />
 
         <Button
-            android:id="@+id/terminalBtn"
+            android:id="@+id/checkStatusBtn"
             android:layout_width="match_parent"
             android:layout_height="44dp"
-            android:text="OPEN TERMINAL"
+            android:text="CHECK STATUS"
             android:textColor="@color/zov_bg"
             android:backgroundTint="#FFF1AE"
             android:fontFamily="monospace"
             android:textStyle="bold"
             android:layout_marginTop="12dp" />
+
+        <Button
+            android:id="@+id/repairBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="REPAIR RUNTIME"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FFF1AE"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/updateHerokuBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="UPDATE HEROKU"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FFF1AE"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/reapplyPatchesBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="FIX APK PATCHES"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FFF1AE"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="TERMINAL SESSION"
+            android:textColor="@color/zov_yellow"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="6dp" />
+
+        <Spinner
+            android:id="@+id/terminalSpinner"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:backgroundTint="@color/zov_yellow"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/addTerminalBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="+ CREATE TERMINAL SESSION"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="@color/zov_yellow"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/terminalBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="OPEN SELECTED TERMINAL"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FFF1AE"
+            android:fontFamily="monospace"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+
+        <Button
+            android:id="@+id/stopTerminalBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="STOP SELECTED TERMINAL"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FF6B6B"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/clearLogsBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="CLEAR LOGS"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#FFF1AE"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/copyLogsBtn"
@@ -215,6 +355,16 @@
             android:layout_width="match_parent"
             android:layout_height="44dp"
             android:text="✈ SUPPORT @HEROKUAPK"
+            android:textColor="@color/zov_bg"
+            android:backgroundTint="#8BD3FF"
+            android:fontFamily="monospace"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/githubBtn"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:text="OPEN GITHUB REPO"
             android:textColor="@color/zov_bg"
             android:backgroundTint="#8BD3FF"
             android:fontFamily="monospace"

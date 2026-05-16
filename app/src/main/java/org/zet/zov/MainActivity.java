@@ -44,12 +44,18 @@ import java.util.zip.GZIPInputStream;
 
 public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
+    private TextView statusText;
     private ScrollView logScroll;
     private EditText inputField;
+    private Button followOutputBtn;
     private Spinner sessionSpinner;
+    private Spinner terminalSpinner;
     private View actionPanel;
     private ArrayAdapter<String> sessionAdapter;
+    private ArrayAdapter<String> terminalAdapter;
     private final ArrayList<String> sessionProfiles = new ArrayList<>();
+    private final ArrayList<String> terminalProfiles = new ArrayList<>();
+    private final Map<String, Process> terminalProcesses = new HashMap<>();
     private Process currentProcess;
     private File baseDir;
     private File rootfsDir;
@@ -57,16 +63,19 @@ public class MainActivity extends AppCompatActivity {
     private PowerManager.WakeLock wakeLock;
     private boolean waitingForInlineBot = false;
     private boolean waitingForSessionName = false;
+    private boolean waitingForTerminalName = false;
     private boolean manualStop = false;
     private boolean botAutoRestartEnabled = false;
     private boolean botSupervisorActive = false;
+    private boolean followOutput = true;
+    private boolean scrollScheduled = false;
     private Thread metricsThread;
     private long lastCpuTotal = 0;
     private long lastCpuIdle = 0;
     private double lastCpuPercent = -1;
     private static final String SUPPORT_URL = "https://t.me/herokuapk";
     private static final int MAX_LOG_CHARS = 90000;
-    private static final String PATCH_MARKER = ".herokuapk_patch_v30";
+    private static final String PATCH_MARKER = ".herokuapk_patch_v33";
 
     private static final String UBUNTU_BASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/";
 
@@ -77,9 +86,12 @@ public class MainActivity extends AppCompatActivity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         logConsole = findViewById(R.id.logConsole);
+        statusText = findViewById(R.id.statusText);
         logScroll = findViewById(R.id.logScroll);
         inputField = findViewById(R.id.inputField);
+        followOutputBtn = findViewById(R.id.followOutputBtn);
         sessionSpinner = findViewById(R.id.sessionSpinner);
+        terminalSpinner = findViewById(R.id.terminalSpinner);
         actionPanel = findViewById(R.id.actionPanel);
         Button menuToggleBtn = findViewById(R.id.menuToggleBtn);
         Button menuCloseBtn = findViewById(R.id.menuCloseBtn);
@@ -91,6 +103,15 @@ public class MainActivity extends AppCompatActivity {
         Button copyLogsBtn = findViewById(R.id.copyLogsBtn);
         Button supportBtn = findViewById(R.id.supportBtn);
         Button addSessionBtn = findViewById(R.id.addSessionBtn);
+        Button checkStatusBtn = findViewById(R.id.checkStatusBtn);
+        Button repairBtn = findViewById(R.id.repairBtn);
+        Button updateHerokuBtn = findViewById(R.id.updateHerokuBtn);
+        Button reapplyPatchesBtn = findViewById(R.id.reapplyPatchesBtn);
+        Button addTerminalBtn = findViewById(R.id.addTerminalBtn);
+        Button stopTerminalBtn = findViewById(R.id.stopTerminalBtn);
+        Button clearLogsBtn = findViewById(R.id.clearLogsBtn);
+        Button githubBtn = findViewById(R.id.githubBtn);
+        Button bottomBtn = findViewById(R.id.bottomBtn);
         Button sendInputBtn = findViewById(R.id.sendInputBtn);
 
         baseDir = new File(getFilesDir(), "userland");
@@ -102,6 +123,8 @@ public class MainActivity extends AppCompatActivity {
         startHostMetricsWriter();
         loadSessionProfiles();
         setupSessionMenu();
+        loadTerminalProfiles();
+        setupTerminalMenu();
 
         menuToggleBtn.setOnClickListener(v -> toggleMenu());
         menuCloseBtn.setOnClickListener(v -> closeMenu());
@@ -113,11 +136,29 @@ public class MainActivity extends AppCompatActivity {
         copyLogsBtn.setOnClickListener(v -> copyLogs());
         supportBtn.setOnClickListener(v -> openSupportChat());
         addSessionBtn.setOnClickListener(v -> askSessionName());
+        checkStatusBtn.setOnClickListener(v -> runDiagnostics());
+        repairBtn.setOnClickListener(v -> runTask(this::repairRuntime));
+        updateHerokuBtn.setOnClickListener(v -> updateHeroku());
+        reapplyPatchesBtn.setOnClickListener(v -> reapplyPatches());
+        addTerminalBtn.setOnClickListener(v -> askTerminalName());
+        stopTerminalBtn.setOnClickListener(v -> stopSelectedTerminal());
+        clearLogsBtn.setOnClickListener(v -> clearLogs());
+        githubBtn.setOnClickListener(v -> openGithubRepo());
+        followOutputBtn.setOnClickListener(v -> toggleFollowOutput());
+        bottomBtn.setOnClickListener(v -> scrollToBottomNow());
         sendInputBtn.setOnClickListener(v -> sendInput());
 
         log("[INFO] Heroku Host ready");
         log("[INFO] Account profile: " + selectedSessionName());
         log("[INFO] Step 1: LINUX, then HEROKU, then START");
+        updateStatusLine();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (followOutput) scrollToBottomSoon();
+        updateStatusLine();
     }
 
     private void toggleMenu() {
@@ -197,6 +238,18 @@ public class MainActivity extends AppCompatActivity {
         appendOutput(msg + "\n");
     }
 
+    private void updateStatusLine() {
+        if (statusText == null) return;
+        runOnUiThread(() -> {
+            String linux = isRootfsValid() ? "Linux OK" : "Linux missing";
+            String heroku = isHerokuInstalledForSelectedAccount() ? "Heroku OK" : "Heroku missing";
+            String bot = currentProcess != null && currentProcess.isAlive() ? "running" : "stopped";
+            String terminal = selectedTerminalName();
+            String terminalState = isTerminalAlive(terminal) ? "on" : "off";
+            statusText.setText("account: " + selectedSessionName() + " | " + linux + " | " + heroku + " | bot: " + bot + " | " + terminal + ": " + terminalState);
+        });
+    }
+
     private void appendOutput(String msg) {
         String clean = filterLogText(msg);
         if (clean.isEmpty()) return;
@@ -206,8 +259,30 @@ public class MainActivity extends AppCompatActivity {
                 CharSequence text = logConsole.getText();
                 logConsole.setText(text.subSequence(text.length() - MAX_LOG_CHARS, text.length()));
             }
-            logScroll.post(() -> logScroll.fullScroll(ScrollView.FOCUS_DOWN));
+            if (followOutput) scrollToBottomSoon();
         });
+    }
+
+    private void toggleFollowOutput() {
+        followOutput = !followOutput;
+        if (followOutputBtn != null) {
+            followOutputBtn.setText(followOutput ? "FOLLOW: ON" : "FOLLOW: OFF");
+        }
+        if (followOutput) scrollToBottomNow();
+    }
+
+    private void scrollToBottomSoon() {
+        if (scrollScheduled || logScroll == null) return;
+        scrollScheduled = true;
+        logScroll.postDelayed(() -> {
+            scrollScheduled = false;
+            scrollToBottomNow();
+        }, 80);
+    }
+
+    private void scrollToBottomNow() {
+        if (logScroll == null) return;
+        logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private String filterLogText(String msg) {
@@ -228,6 +303,10 @@ public class MainActivity extends AppCompatActivity {
 
     private File sessionsFile() {
         return new File(baseDir, "sessions.txt");
+    }
+
+    private File terminalSessionsFile() {
+        return new File(baseDir, "terminal_sessions.txt");
     }
 
     private void loadSessionProfiles() {
@@ -259,6 +338,44 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 try { saveSelectedSessionName(sessionProfiles.get(position)); } catch (Exception ignored) {}
+                updateStatusLine();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {}
+        });
+    }
+
+    private void loadTerminalProfiles() {
+        terminalProfiles.clear();
+        terminalProfiles.add("term1");
+        try {
+            File file = terminalSessionsFile();
+            if (file.exists()) {
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file)))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        String profile = sanitizeSessionName(line);
+                        if (!profile.isEmpty() && !terminalProfiles.contains(profile)) terminalProfiles.add(profile);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        Collections.sort(terminalProfiles.subList(1, terminalProfiles.size()));
+    }
+
+    private void setupTerminalMenu() {
+        terminalAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, terminalProfiles);
+        terminalAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        terminalSpinner.setAdapter(terminalAdapter);
+        String saved = loadSelectedTerminalName();
+        int index = terminalProfiles.indexOf(saved);
+        if (index >= 0) terminalSpinner.setSelection(index);
+        terminalSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                try { saveSelectedTerminalName(terminalProfiles.get(position)); } catch (Exception ignored) {}
+                updateStatusLine();
             }
 
             @Override
@@ -268,6 +385,10 @@ public class MainActivity extends AppCompatActivity {
 
     private File selectedSessionFile() {
         return new File(baseDir, "selected_session.txt");
+    }
+
+    private File selectedTerminalFile() {
+        return new File(baseDir, "selected_terminal.txt");
     }
 
     private String loadSelectedSessionName() {
@@ -290,16 +411,53 @@ public class MainActivity extends AppCompatActivity {
         writeFile(selectedSessionFile(), sanitizeSessionName(profile) + "\n");
     }
 
+    private String loadSelectedTerminalName() {
+        try {
+            File file = selectedTerminalFile();
+            if (!file.exists()) return "term1";
+            byte[] data = new byte[(int) file.length()];
+            try (FileInputStream in = new FileInputStream(file)) {
+                int read = in.read(data);
+                if (read <= 0) return "term1";
+            }
+            String selected = sanitizeSessionName(new String(data));
+            return selected.isEmpty() ? "term1" : selected;
+        } catch (Exception ignored) {
+            return "term1";
+        }
+    }
+
+    private void saveSelectedTerminalName(String profile) throws Exception {
+        writeFile(selectedTerminalFile(), sanitizeSessionName(profile) + "\n");
+    }
+
     private void saveSessionProfiles() throws Exception {
         StringBuilder data = new StringBuilder();
         for (String profile : sessionProfiles) data.append(profile).append('\n');
         writeFile(sessionsFile(), data.toString());
     }
 
+    private void saveTerminalProfiles() throws Exception {
+        StringBuilder data = new StringBuilder();
+        for (String profile : terminalProfiles) data.append(profile).append('\n');
+        writeFile(terminalSessionsFile(), data.toString());
+    }
+
     private String selectedSessionName() {
         Object selected = sessionSpinner == null ? null : sessionSpinner.getSelectedItem();
         String profile = sanitizeSessionName(selected == null ? "main" : selected.toString());
         return profile.isEmpty() ? "main" : profile;
+    }
+
+    private String selectedTerminalName() {
+        Object selected = terminalSpinner == null ? null : terminalSpinner.getSelectedItem();
+        String profile = sanitizeSessionName(selected == null ? "term1" : selected.toString());
+        return profile.isEmpty() ? "term1" : profile;
+    }
+
+    private boolean isTerminalAlive(String name) {
+        Process process = terminalProcesses.get(name);
+        return process != null && process.isAlive();
     }
 
     private String sanitizeSessionName(String input) {
@@ -351,6 +509,15 @@ public class MainActivity extends AppCompatActivity {
         log("[SETUP] Type new account profile name and press SEND.");
     }
 
+    private void askTerminalName() {
+        waitingForTerminalName = true;
+        runOnUiThread(() -> {
+            inputField.setText("");
+            inputField.setHint("terminal name, e.g. deps");
+        });
+        log("[SETUP] Type new terminal session name and press SEND.");
+    }
+
     private void saveNewSession(String rawName) {
         String profile = sanitizeSessionName(rawName);
         if (profile.isEmpty()) {
@@ -370,8 +537,34 @@ public class MainActivity extends AppCompatActivity {
             waitingForSessionName = false;
             log("[OK] Account profile selected: " + profile);
             log("[INFO] For another Telegram account press HEROKU, then START and login with its phone.");
+            updateStatusLine();
         } catch (Exception e) {
             log("[ERROR] Failed to save session: " + e.getMessage());
+        }
+    }
+
+    private void saveNewTerminal(String rawName) {
+        String profile = sanitizeSessionName(rawName);
+        if (profile.isEmpty()) {
+            log("[ERROR] Invalid terminal name. Use a-z, 0-9, _ or -.");
+            askTerminalName();
+            return;
+        }
+        try {
+            if (!terminalProfiles.contains(profile)) {
+                terminalProfiles.add(profile);
+                Collections.sort(terminalProfiles.subList(1, terminalProfiles.size()));
+                saveTerminalProfiles();
+                setupTerminalMenu();
+            }
+            terminalSpinner.setSelection(terminalProfiles.indexOf(profile));
+            saveSelectedTerminalName(profile);
+            waitingForTerminalName = false;
+            log("[OK] Terminal session selected: " + profile);
+            log("[INFO] Press OPEN SELECTED TERMINAL to start it.");
+            updateStatusLine();
+        } catch (Exception e) {
+            log("[ERROR] Failed to save terminal session: " + e.getMessage());
         }
     }
 
@@ -909,7 +1102,69 @@ public class MainActivity extends AppCompatActivity {
             ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false, true, false, "INSTALL HEROKU");
     }
 
+    private void runDiagnostics() {
+        closeMenu();
+        runTask(() -> {
+            updateStatusLine();
+            log("[DIAG] Account: " + selectedSessionName());
+            log("[DIAG] Heroku path: " + herokuPath());
+            log("[DIAG] Android ABI: " + Build.SUPPORTED_ABIS[0]);
+            log("[DIAG] Linux rootfs: " + (isRootfsValid() ? "OK" : "missing/broken"));
+            log("[DIAG] Support assets: " + (new File(supportDir, "proot").exists() ? "OK" : "missing"));
+            log("[DIAG] Heroku repo: " + (new File(herokuRootfsDir(), "heroku").exists() ? "OK" : "missing"));
+            log("[DIAG] venv python: " + (fileExistsOrSymlink(new File(herokuRootfsDir(), ".venv/bin/python")) ? "OK" : "missing"));
+            log("[DIAG] inline bot: " + (isInlineBotUsernameValid(getInlineBotUsername()) ? "@" + getInlineBotUsername() : "not set"));
+            log("[DIAG] bot process: " + ((currentProcess != null && currentProcess.isAlive()) ? "running" : "stopped"));
+            try {
+                writeHostInfo();
+                log("[DIAG] host info: updated");
+            } catch (Exception e) {
+                log("[DIAG] host info error: " + e.getMessage());
+            }
+        });
+    }
+
+    private void repairRuntime() throws Exception {
+        closeMenu();
+        log("[REPAIR] Repairing Linux runtime files...");
+        if (!new File(supportDir, "execInProot.sh").exists()) installSupportAssets();
+        setupRootfs();
+        repairRootfs();
+        if (testProotRuntime()) {
+            log("[REPAIR] Runtime OK");
+        } else {
+            log("[REPAIR] Runtime still broken. Press DOWNLOAD LINUX if needed.");
+        }
+        updateStatusLine();
+    }
+
+    private void updateHeroku() {
+        closeMenu();
+        String path = herokuPath();
+        if (!isHerokuInstalledForSelectedAccount()) {
+            log("[ERROR] Heroku is not installed for account profile: " + selectedSessionName());
+            return;
+        }
+        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && cd " + path + " && " +
+            "git pull --ff-only || git pull && " +
+            ".venv/bin/python -m pip install -r requirements.txt && " +
+            "rm -f " + PATCH_MARKER + " && " +
+            herokuApkPatchCommand(), false, false, false, "UPDATE HEROKU");
+    }
+
+    private void reapplyPatches() {
+        closeMenu();
+        String path = herokuPath();
+        if (!isHerokuInstalledForSelectedAccount()) {
+            log("[ERROR] Heroku is not installed for account profile: " + selectedSessionName());
+            return;
+        }
+        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && cd " + path + " && " +
+            "rm -f " + PATCH_MARKER + " && " + herokuApkPatchCommand(), false, false, false, "REAPPLY PATCHES");
+    }
+
     private void startInteractiveBot() {
+        closeMenu();
         String inlineBot = getInlineBotUsername();
         if (!isInlineBotUsernameValid(inlineBot)) {
             askInlineBotUsername();
@@ -973,12 +1228,65 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startTerminalSession() {
+        closeMenu();
+        followOutput = true;
+        if (followOutputBtn != null) followOutputBtn.setText("FOLLOW: ON");
         manualStop = false;
         botAutoRestartEnabled = false;
         String path = herokuPath();
-        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
-            "cd " + path + " 2>/dev/null || cd /root && " +
-            "echo '[TERMINAL] Type commands below and press SEND' && /bin/sh -i", true, false, false, "TERMINAL");
+        String terminalName = selectedTerminalName();
+        Process existing = terminalProcesses.get(terminalName);
+        if (existing != null && existing.isAlive()) {
+            log("[TERMINAL:" + terminalName + "] already running. Input will be sent there.");
+            updateStatusLine();
+            return;
+        }
+        startTerminalProcess(
+            terminalName,
+            "export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
+                "cd " + path + " 2>/dev/null || cd /root && " +
+                "echo '[TERMINAL:" + terminalName + "] Type commands below and press SEND' && /bin/sh -i"
+        );
+    }
+
+    private void startTerminalProcess(String terminalName, String command) {
+        runTask(() -> {
+            if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
+                log("[ERROR] Linux is not installed. Press LINUX first.");
+                return;
+            }
+            setupRootfs();
+            repairRootfs();
+            log("[TERMINAL:" + terminalName + "] starting");
+            ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
+            pb.directory(baseDir);
+            pb.environment().putAll(prootEnv());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            terminalProcesses.put(terminalName, process);
+            updateStatusLine();
+            pumpOutput(process.getInputStream());
+            int code = process.waitFor();
+            if (terminalProcesses.get(terminalName) == process) terminalProcesses.remove(terminalName);
+            log("[TERMINAL:" + terminalName + "] exited code " + code);
+            updateStatusLine();
+        });
+    }
+
+    private void stopSelectedTerminal() {
+        closeMenu();
+        String terminalName = selectedTerminalName();
+        Process process = terminalProcesses.get(terminalName);
+        if (process == null || !process.isAlive()) {
+            log("[TERMINAL:" + terminalName + "] not running");
+            updateStatusLine();
+            return;
+        }
+        process.destroy();
+        try { process.destroyForcibly(); } catch (Exception ignored) {}
+        terminalProcesses.remove(terminalName);
+        log("[TERMINAL:" + terminalName + "] stopped");
+        updateStatusLine();
     }
 
     private String herokuApkPatchCommand() {
@@ -1210,9 +1518,11 @@ public class MainActivity extends AppCompatActivity {
                 pb.redirectErrorStream(true);
                 Process process = pb.start();
                 currentProcess = process;
+                updateStatusLine();
                 pumpOutput(process.getInputStream());
                 int code = process.waitFor();
                 if (currentProcess == process) currentProcess = null;
+                updateStatusLine();
                 log("[EXIT] code " + code);
                 if (!interactive) log("[DONE] Command finished");
                 if (code == 0 && openSupportOnSuccess) {
@@ -1275,8 +1585,26 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        if (waitingForTerminalName) {
+            saveNewTerminal(text);
+            return;
+        }
+
+        Process terminal = terminalProcesses.get(selectedTerminalName());
+        if (terminal != null && terminal.isAlive()) {
+            try {
+                OutputStream os = terminal.getOutputStream();
+                os.write((text + "\n").getBytes());
+                os.flush();
+                log("[INPUT -> " + selectedTerminalName() + "] sent");
+            } catch (Exception e) {
+                log("[INPUT ERROR] " + e.getMessage());
+            }
+            return;
+        }
+
         if (currentProcess == null) {
-            log("[ERROR] No running process");
+            log("[ERROR] No running process. Open a terminal session or start userbot first.");
             return;
         }
         try {
@@ -1290,6 +1618,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void stopCurrentProcess() {
+        closeMenu();
         manualStop = true;
         botAutoRestartEnabled = false;
         botSupervisorActive = false;
@@ -1300,6 +1629,7 @@ public class MainActivity extends AppCompatActivity {
             currentProcess = null;
         }
         forceStopHerokuProcesses();
+        updateStatusLine();
         releaseWakeLock();
     }
 
@@ -1326,6 +1656,12 @@ public class MainActivity extends AppCompatActivity {
         log("[INFO] Logs copied to clipboard");
     }
 
+    private void clearLogs() {
+        runOnUiThread(() -> logConsole.setText("Logs cleared.\n"));
+        if (followOutput) scrollToBottomSoon();
+        updateStatusLine();
+    }
+
     private void openSupportChat() {
         try {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(SUPPORT_URL));
@@ -1333,6 +1669,15 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception e) {
             log("[WARN] Could not open support chat: " + e.getMessage());
             log("[INFO] Support: " + SUPPORT_URL);
+        }
+    }
+
+    private void openGithubRepo() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ziwupa/heroku-host-apk"));
+            startActivity(intent);
+        } catch (Exception e) {
+            log("[WARN] Could not open GitHub: " + e.getMessage());
         }
     }
 
