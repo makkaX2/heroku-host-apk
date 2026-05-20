@@ -2,7 +2,13 @@
 <resources>
     <color name="zov_bg">#050403</color>
     <color name="zov_panel">#121008</color>
+    <color name="zov_panel_alt">#1A160D</color>
+    <color name="zov_panel_line">#3A3120</color>
     <color name="zov_yellow">#FFD75F</color>
+    <color name="zov_yellow_soft">#FFF1AE</color>
     <color name="zov_white">#FFF8DF</color>
     <color name="zov_muted">#888888</color>
+    <color name="zov_muted_soft">#B5A98B</color>
+    <color name="zov_info">#8BD3FF</color>
+    <color name="zov_danger">#FF6B6B</color>
 </resources>
