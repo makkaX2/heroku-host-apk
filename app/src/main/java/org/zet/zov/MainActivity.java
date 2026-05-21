@@ -54,14 +54,15 @@ import java.util.zip.GZIPInputStream;
 public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
     private TextView statusText;
-    private TextView updateNoticeText;
     private TextView versionInfoText;
+    private TextView forceUpdateBodyText;
     private ScrollView logScroll;
     private EditText inputField;
     private Button followOutputBtn;
     private Spinner sessionSpinner;
     private Spinner terminalSpinner;
     private View actionPanel;
+    private View forceUpdateOverlay;
     private ArrayAdapter<String> sessionAdapter;
     private ArrayAdapter<String> terminalAdapter;
     private final ArrayList<String> sessionProfiles = new ArrayList<>();
@@ -89,6 +90,7 @@ public class MainActivity extends AppCompatActivity {
     private double lastCpuPercent = -1;
     private String lastKeepAliveSignature = "";
     private String lastUpdateCheckLabel = "never";
+    private boolean updateRequired = false;
     private static final String SUPPORT_URL = "https://t.me/herokuapk";
     private static final String GITHUB_REPO_URL = "https://github.com/ziwupa/heroku-host-apk";
     private static final String GITHUB_RELEASES_URL = "https://github.com/ziwupa/heroku-host-apk/releases/latest";
@@ -106,14 +108,15 @@ public class MainActivity extends AppCompatActivity {
 
         logConsole = findViewById(R.id.logConsole);
         statusText = findViewById(R.id.statusText);
-        updateNoticeText = findViewById(R.id.updateNoticeText);
         versionInfoText = findViewById(R.id.versionInfoText);
+        forceUpdateBodyText = findViewById(R.id.forceUpdateBodyText);
         logScroll = findViewById(R.id.logScroll);
         inputField = findViewById(R.id.inputField);
         followOutputBtn = findViewById(R.id.followOutputBtn);
         sessionSpinner = findViewById(R.id.sessionSpinner);
         terminalSpinner = findViewById(R.id.terminalSpinner);
         actionPanel = findViewById(R.id.actionPanel);
+        forceUpdateOverlay = findViewById(R.id.forceUpdateOverlay);
         Button menuToggleBtn = findViewById(R.id.menuToggleBtn);
         Button menuCloseBtn = findViewById(R.id.menuCloseBtn);
         Button installLinuxBtn = findViewById(R.id.installLinuxBtn);
@@ -135,6 +138,8 @@ public class MainActivity extends AppCompatActivity {
         Button githubBtn = findViewById(R.id.githubBtn);
         Button bottomBtn = findViewById(R.id.bottomBtn);
         Button sendInputBtn = findViewById(R.id.sendInputBtn);
+        Button updateNowBtn = findViewById(R.id.updateNowBtn);
+        Button checkAgainBtn = findViewById(R.id.checkAgainBtn);
 
         baseDir = new File(getFilesDir(), "userland");
         rootfsDir = new File(baseDir, "rootfs");
@@ -174,7 +179,11 @@ public class MainActivity extends AppCompatActivity {
         followOutputBtn.setOnClickListener(v -> toggleFollowOutput());
         bottomBtn.setOnClickListener(v -> scrollToBottomNow());
         sendInputBtn.setOnClickListener(v -> sendInput());
-        if (updateNoticeText != null) updateNoticeText.setOnClickListener(v -> openLatestRelease());
+        updateNowBtn.setOnClickListener(v -> openLatestRelease());
+        checkAgainBtn.setOnClickListener(v -> {
+            log("[UPDATE] Forced re-check requested");
+            checkForUpdatesAsync();
+        });
         updateVersionInfoText();
 
         log("[INFO] Heroku Host ready");
@@ -299,7 +308,13 @@ public class MainActivity extends AppCompatActivity {
         updateStatusLine();
         updateInputHint();
         updateVersionInfoText();
+        syncForcedUpdateUi();
         syncKeepAliveState();
+    }
+
+    private void syncForcedUpdateUi() {
+        if (forceUpdateOverlay == null) return;
+        runOnUiThread(() -> forceUpdateOverlay.setVisibility(updateRequired ? View.VISIBLE : View.GONE));
     }
 
     private void updateVersionInfoText() {
@@ -350,17 +365,20 @@ public class MainActivity extends AppCompatActivity {
                 int remoteVersionCode = parseVersionCode(remoteBuildGradle);
                 String remoteVersionName = parseVersionName(remoteBuildGradle);
                 if (remoteVersionCode > localVersionCode) {
+                    updateRequired = true;
                     String text = "Update available: local v"
                         + localVersionName + " (" + localVersionCode + ") -> remote v"
                         + remoteVersionName + " (" + remoteVersionCode + "). Tap to open latest release.";
-                    showUpdateNotice(text, true);
+                    showForcedUpdate(text, true);
                     log("[UPDATE] " + text);
                 } else {
-                    showUpdateNotice("", false);
+                    updateRequired = false;
+                    showForcedUpdate("", false);
                     log("[UPDATE] App is up to date: v" + localVersionName + " (" + localVersionCode + ")");
                 }
             } catch (Exception e) {
-                showUpdateNotice("", false);
+                updateRequired = false;
+                showForcedUpdate("", false);
                 log("[UPDATE] Check failed: " + e.getMessage());
             }
         }, "HerokuHostVersionCheck").start();
@@ -394,11 +412,14 @@ public class MainActivity extends AppCompatActivity {
         return matcher.group(1);
     }
 
-    private void showUpdateNotice(String text, boolean visible) {
-        if (updateNoticeText == null) return;
+    private void showForcedUpdate(String text, boolean visible) {
         runOnUiThread(() -> {
-            updateNoticeText.setVisibility(visible ? View.VISIBLE : View.GONE);
-            updateNoticeText.setText(text);
+            if (forceUpdateOverlay != null) {
+                forceUpdateOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+            }
+            if (forceUpdateBodyText != null) {
+                forceUpdateBodyText.setText(text);
+            }
         });
     }
 
