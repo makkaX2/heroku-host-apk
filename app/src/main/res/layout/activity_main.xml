@@ -63,6 +63,16 @@
                 android:fontFamily="monospace" />
 
             <TextView
+                android:id="@+id/versionInfoText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="app version: loading..."
+                android:textColor="@color/zov_muted_soft"
+                android:textSize="12sp"
+                android:fontFamily="monospace" />
+
+            <TextView
                 android:id="@+id/statusText"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

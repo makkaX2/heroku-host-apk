@@ -39,10 +39,13 @@ import java.io.OutputStream;
 import java.net.URL;
 import java.net.URLConnection;
 import java.nio.file.Files;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -52,6 +55,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
     private TextView statusText;
     private TextView updateNoticeText;
+    private TextView versionInfoText;
     private ScrollView logScroll;
     private EditText inputField;
     private Button followOutputBtn;
@@ -84,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
     private long lastCpuIdle = 0;
     private double lastCpuPercent = -1;
     private String lastKeepAliveSignature = "";
+    private String lastUpdateCheckLabel = "never";
     private static final String SUPPORT_URL = "https://t.me/herokuapk";
     private static final String GITHUB_REPO_URL = "https://github.com/ziwupa/heroku-host-apk";
     private static final String GITHUB_RELEASES_URL = "https://github.com/ziwupa/heroku-host-apk/releases/latest";
@@ -102,6 +107,7 @@ public class MainActivity extends AppCompatActivity {
         logConsole = findViewById(R.id.logConsole);
         statusText = findViewById(R.id.statusText);
         updateNoticeText = findViewById(R.id.updateNoticeText);
+        versionInfoText = findViewById(R.id.versionInfoText);
         logScroll = findViewById(R.id.logScroll);
         inputField = findViewById(R.id.inputField);
         followOutputBtn = findViewById(R.id.followOutputBtn);
@@ -169,6 +175,7 @@ public class MainActivity extends AppCompatActivity {
         bottomBtn.setOnClickListener(v -> scrollToBottomNow());
         sendInputBtn.setOnClickListener(v -> sendInput());
         if (updateNoticeText != null) updateNoticeText.setOnClickListener(v -> openLatestRelease());
+        updateVersionInfoText();
 
         log("[INFO] Heroku Host ready");
         log("[INFO] Account profile: " + selectedSessionName());
@@ -291,7 +298,22 @@ public class MainActivity extends AppCompatActivity {
     private void refreshProcessUiState() {
         updateStatusLine();
         updateInputHint();
+        updateVersionInfoText();
         syncKeepAliveState();
+    }
+
+    private void updateVersionInfoText() {
+        if (versionInfoText == null) return;
+        runOnUiThread(() -> {
+            try {
+                PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+                String versionName = packageInfo.versionName == null ? "?" : packageInfo.versionName;
+                int versionCode = packageInfo.versionCode;
+                versionInfoText.setText("app version: v" + versionName + " (" + versionCode + ") | last check: " + lastUpdateCheckLabel);
+            } catch (Exception e) {
+                versionInfoText.setText("app version: unavailable | last check: " + lastUpdateCheckLabel);
+            }
+        });
     }
 
     private void updateInputHint() {
@@ -319,6 +341,8 @@ public class MainActivity extends AppCompatActivity {
     private void checkForUpdatesAsync() {
         new Thread(() -> {
             try {
+                lastUpdateCheckLabel = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date());
+                updateVersionInfoText();
                 PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
                 int localVersionCode = packageInfo.versionCode;
                 String localVersionName = packageInfo.versionName == null ? "?" : packageInfo.versionName;
