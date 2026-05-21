@@ -6,7 +6,9 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetManager;
+import android.content.pm.PackageInfo;
 import android.net.Uri;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
@@ -22,6 +24,7 @@ import android.widget.ArrayAdapter;
 import android.widget.Spinner;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.content.ContextCompat;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -34,17 +37,21 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.URL;
+import java.net.URLConnection;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
 public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
     private TextView statusText;
+    private TextView updateNoticeText;
     private ScrollView logScroll;
     private EditText inputField;
     private Button followOutputBtn;
@@ -61,6 +68,7 @@ public class MainActivity extends AppCompatActivity {
     private File rootfsDir;
     private File supportDir;
     private PowerManager.WakeLock wakeLock;
+    private WifiManager.WifiLock wifiLock;
     private boolean waitingForInlineBot = false;
     private boolean waitingForSessionName = false;
     private boolean waitingForTerminalName = false;
@@ -70,10 +78,16 @@ public class MainActivity extends AppCompatActivity {
     private boolean followOutput = true;
     private boolean scrollScheduled = false;
     private Thread metricsThread;
+    private Thread keepAliveWatchdogThread;
+    private volatile boolean keepAliveWatchdogRunning = false;
     private long lastCpuTotal = 0;
     private long lastCpuIdle = 0;
     private double lastCpuPercent = -1;
+    private String lastKeepAliveSignature = "";
     private static final String SUPPORT_URL = "https://t.me/herokuapk";
+    private static final String GITHUB_REPO_URL = "https://github.com/ziwupa/heroku-host-apk";
+    private static final String GITHUB_RELEASES_URL = "https://github.com/ziwupa/heroku-host-apk/releases/latest";
+    private static final String REMOTE_BUILD_GRADLE_URL = "https://raw.githubusercontent.com/ziwupa/heroku-host-apk/main/app/build.gradle";
     private static final int MAX_LOG_CHARS = 90000;
     private static final String PATCH_MARKER = ".herokuapk_patch_v33";
 
@@ -87,6 +101,7 @@ public class MainActivity extends AppCompatActivity {
 
         logConsole = findViewById(R.id.logConsole);
         statusText = findViewById(R.id.statusText);
+        updateNoticeText = findViewById(R.id.updateNoticeText);
         logScroll = findViewById(R.id.logScroll);
         inputField = findViewById(R.id.inputField);
         followOutputBtn = findViewById(R.id.followOutputBtn);
@@ -107,6 +122,7 @@ public class MainActivity extends AppCompatActivity {
         Button repairBtn = findViewById(R.id.repairBtn);
         Button updateHerokuBtn = findViewById(R.id.updateHerokuBtn);
         Button reapplyPatchesBtn = findViewById(R.id.reapplyPatchesBtn);
+        Button checkUpdatesBtn = findViewById(R.id.checkUpdatesBtn);
         Button addTerminalBtn = findViewById(R.id.addTerminalBtn);
         Button stopTerminalBtn = findViewById(R.id.stopTerminalBtn);
         Button clearLogsBtn = findViewById(R.id.clearLogsBtn);
@@ -121,6 +137,7 @@ public class MainActivity extends AppCompatActivity {
         supportDir.mkdirs();
         requestBackgroundWorkPermission();
         startHostMetricsWriter();
+        startKeepAliveWatchdog();
         loadSessionProfiles();
         setupSessionMenu();
         loadTerminalProfiles();
@@ -140,6 +157,10 @@ public class MainActivity extends AppCompatActivity {
         repairBtn.setOnClickListener(v -> runTask(this::repairRuntime));
         updateHerokuBtn.setOnClickListener(v -> updateHeroku());
         reapplyPatchesBtn.setOnClickListener(v -> reapplyPatches());
+        checkUpdatesBtn.setOnClickListener(v -> {
+            log("[UPDATE] Manual check requested");
+            checkForUpdatesAsync();
+        });
         addTerminalBtn.setOnClickListener(v -> askTerminalName());
         stopTerminalBtn.setOnClickListener(v -> stopSelectedTerminal());
         clearLogsBtn.setOnClickListener(v -> clearLogs());
@@ -147,18 +168,26 @@ public class MainActivity extends AppCompatActivity {
         followOutputBtn.setOnClickListener(v -> toggleFollowOutput());
         bottomBtn.setOnClickListener(v -> scrollToBottomNow());
         sendInputBtn.setOnClickListener(v -> sendInput());
+        if (updateNoticeText != null) updateNoticeText.setOnClickListener(v -> openLatestRelease());
 
         log("[INFO] Heroku Host ready");
         log("[INFO] Account profile: " + selectedSessionName());
         log("[INFO] Step 1: LINUX, then HEROKU, then START");
-        updateStatusLine();
+        checkForUpdatesAsync();
+        refreshProcessUiState();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         if (followOutput) scrollToBottomSoon();
-        updateStatusLine();
+        refreshProcessUiState();
+    }
+
+    @Override
+    protected void onDestroy() {
+        keepAliveWatchdogRunning = false;
+        super.onDestroy();
     }
 
     private void toggleMenu() {
@@ -229,7 +258,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void releaseWakeLock() {
         try {
-            if (currentProcess != null && currentProcess.isAlive()) return;
+            if (hasActiveRuntime() || botSupervisorActive) return;
             if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         } catch (Exception ignored) {}
     }
@@ -243,11 +272,197 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
             String linux = isRootfsValid() ? "Linux OK" : "Linux missing";
             String heroku = isHerokuInstalledForSelectedAccount() ? "Heroku OK" : "Heroku missing";
-            String bot = currentProcess != null && currentProcess.isAlive() ? "running" : "stopped";
+            String bot = currentProcess != null && currentProcess.isAlive() ? "running" : (botSupervisorActive ? "watching" : "stopped");
             String terminal = selectedTerminalName();
             String terminalState = isTerminalAlive(terminal) ? "on" : "off";
-            statusText.setText("account: " + selectedSessionName() + " | " + linux + " | " + heroku + " | bot: " + bot + " | " + terminal + ": " + terminalState);
+            String keepalive = (hasActiveRuntime() || botSupervisorActive) ? "on" : "off";
+            statusText.setText(
+                "account: " + selectedSessionName()
+                    + " | " + linux
+                    + " | " + heroku
+                    + " | bot: " + bot
+                    + " | terms: " + activeTerminalCount()
+                    + " | " + terminal + ": " + terminalState
+                    + " | keepalive: " + keepalive
+            );
         });
+    }
+
+    private void refreshProcessUiState() {
+        updateStatusLine();
+        updateInputHint();
+        syncKeepAliveState();
+    }
+
+    private void updateInputHint() {
+        if (inputField == null) return;
+        runOnUiThread(() -> {
+            String hint;
+            Process terminal = terminalProcesses.get(selectedTerminalName());
+            if (waitingForInlineBot) {
+                hint = "inline bot username, e.g. my_cool_bot";
+            } else if (waitingForSessionName) {
+                hint = "enter new account profile name";
+            } else if (waitingForTerminalName) {
+                hint = "enter new terminal session name";
+            } else if (terminal != null && terminal.isAlive()) {
+                hint = "send input to terminal: " + selectedTerminalName();
+            } else if (currentProcess != null && currentProcess.isAlive()) {
+                hint = "send input to userbot process";
+            } else {
+                hint = "send input to active process";
+            }
+            inputField.setHint(hint);
+        });
+    }
+
+    private void checkForUpdatesAsync() {
+        new Thread(() -> {
+            try {
+                PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
+                int localVersionCode = packageInfo.versionCode;
+                String localVersionName = packageInfo.versionName == null ? "?" : packageInfo.versionName;
+                String remoteBuildGradle = fetchText(REMOTE_BUILD_GRADLE_URL);
+                int remoteVersionCode = parseVersionCode(remoteBuildGradle);
+                String remoteVersionName = parseVersionName(remoteBuildGradle);
+                if (remoteVersionCode > localVersionCode) {
+                    String text = "Update available: local v"
+                        + localVersionName + " (" + localVersionCode + ") -> remote v"
+                        + remoteVersionName + " (" + remoteVersionCode + "). Tap to open latest release.";
+                    showUpdateNotice(text, true);
+                    log("[UPDATE] " + text);
+                } else {
+                    showUpdateNotice("", false);
+                    log("[UPDATE] App is up to date: v" + localVersionName + " (" + localVersionCode + ")");
+                }
+            } catch (Exception e) {
+                showUpdateNotice("", false);
+                log("[UPDATE] Check failed: " + e.getMessage());
+            }
+        }, "HerokuHostVersionCheck").start();
+    }
+
+    private String fetchText(String url) throws Exception {
+        URLConnection connection = new URL(url).openConnection();
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(10000);
+        try (InputStream in = connection.getInputStream();
+             InputStreamReader isr = new InputStreamReader(in);
+             BufferedReader reader = new BufferedReader(isr)) {
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append('\n');
+            }
+            return sb.toString();
+        }
+    }
+
+    private int parseVersionCode(String text) {
+        Matcher matcher = Pattern.compile("versionCode\\s+(\\d+)").matcher(text);
+        if (!matcher.find()) throw new IllegalStateException("Remote versionCode not found");
+        return Integer.parseInt(matcher.group(1));
+    }
+
+    private String parseVersionName(String text) {
+        Matcher matcher = Pattern.compile("versionName\\s+\"([^\"]+)\"").matcher(text);
+        if (!matcher.find()) return "?";
+        return matcher.group(1);
+    }
+
+    private void showUpdateNotice(String text, boolean visible) {
+        if (updateNoticeText == null) return;
+        runOnUiThread(() -> {
+            updateNoticeText.setVisibility(visible ? View.VISIBLE : View.GONE);
+            updateNoticeText.setText(text);
+        });
+    }
+
+    private boolean hasActiveRuntime() {
+        if (currentProcess != null && currentProcess.isAlive()) return true;
+        for (Process process : terminalProcesses.values()) {
+            if (process != null && process.isAlive()) return true;
+        }
+        return false;
+    }
+
+    private int activeTerminalCount() {
+        int count = 0;
+        for (Process process : terminalProcesses.values()) {
+            if (process != null && process.isAlive()) count++;
+        }
+        return count;
+    }
+
+    private String activeRuntimeSummary() {
+        if (currentProcess != null && currentProcess.isAlive()) {
+            return botSupervisorActive ? "Userbot active with watchdog" : "Userbot active";
+        }
+        int terminalCount = activeTerminalCount();
+        if (terminalCount > 0) {
+            return terminalCount == 1 ? "1 terminal session active" : terminalCount + " terminal sessions active";
+        }
+        if (botSupervisorActive) return "Watchdog armed for userbot";
+        return "No active runtime";
+    }
+
+    private void syncKeepAliveState() {
+        boolean shouldStayAlive = hasActiveRuntime() || botSupervisorActive;
+        String summary = activeRuntimeSummary();
+        String signature = shouldStayAlive + "|" + summary;
+        if (signature.equals(lastKeepAliveSignature)) return;
+        lastKeepAliveSignature = signature;
+
+        if (shouldStayAlive) {
+            acquireWakeLock();
+            acquireWifiLock();
+            Intent intent = new Intent(this, HostKeepAliveService.class)
+                .putExtra(HostKeepAliveService.EXTRA_TITLE, "Heroku Host keepalive")
+                .putExtra(HostKeepAliveService.EXTRA_TEXT, summary);
+            ContextCompat.startForegroundService(this, intent);
+        } else {
+            releaseWifiLock();
+            releaseWakeLock();
+            stopService(new Intent(this, HostKeepAliveService.class));
+        }
+    }
+
+    private void startKeepAliveWatchdog() {
+        if (keepAliveWatchdogThread != null && keepAliveWatchdogThread.isAlive()) return;
+        keepAliveWatchdogRunning = true;
+        keepAliveWatchdogThread = new Thread(() -> {
+            while (keepAliveWatchdogRunning) {
+                try {
+                    refreshProcessUiState();
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Exception ignored) {}
+            }
+        }, "HerokuHostKeepAliveWatchdog");
+        keepAliveWatchdogThread.setDaemon(true);
+        keepAliveWatchdogThread.start();
+    }
+
+    private void acquireWifiLock() {
+        try {
+            if (wifiLock != null && wifiLock.isHeld()) return;
+            WifiManager wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifiManager == null) return;
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "HerokuHost:WifiLock");
+            wifiLock.setReferenceCounted(false);
+            wifiLock.acquire();
+        } catch (Exception e) {
+            log("[WARN] WifiLock unavailable: " + e.getMessage());
+        }
+    }
+
+    private void releaseWifiLock() {
+        try {
+            if ((hasActiveRuntime() || botSupervisorActive) || wifiLock == null || !wifiLock.isHeld()) return;
+            wifiLock.release();
+        } catch (Exception ignored) {}
     }
 
     private void appendOutput(String msg) {
@@ -338,7 +553,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 try { saveSelectedSessionName(sessionProfiles.get(position)); } catch (Exception ignored) {}
-                updateStatusLine();
+                refreshProcessUiState();
             }
 
             @Override
@@ -375,7 +590,7 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
                 try { saveSelectedTerminalName(terminalProfiles.get(position)); } catch (Exception ignored) {}
-                updateStatusLine();
+                refreshProcessUiState();
             }
 
             @Override
@@ -506,6 +721,7 @@ public class MainActivity extends AppCompatActivity {
             inputField.setText("");
             inputField.setHint("session name, e.g. second");
         });
+        refreshProcessUiState();
         log("[SETUP] Type new account profile name and press SEND.");
     }
 
@@ -515,6 +731,7 @@ public class MainActivity extends AppCompatActivity {
             inputField.setText("");
             inputField.setHint("terminal name, e.g. deps");
         });
+        refreshProcessUiState();
         log("[SETUP] Type new terminal session name and press SEND.");
     }
 
@@ -537,7 +754,7 @@ public class MainActivity extends AppCompatActivity {
             waitingForSessionName = false;
             log("[OK] Account profile selected: " + profile);
             log("[INFO] For another Telegram account press HEROKU, then START and login with its phone.");
-            updateStatusLine();
+            refreshProcessUiState();
         } catch (Exception e) {
             log("[ERROR] Failed to save session: " + e.getMessage());
         }
@@ -562,7 +779,7 @@ public class MainActivity extends AppCompatActivity {
             waitingForTerminalName = false;
             log("[OK] Terminal session selected: " + profile);
             log("[INFO] Press OPEN SELECTED TERMINAL to start it.");
-            updateStatusLine();
+            refreshProcessUiState();
         } catch (Exception e) {
             log("[ERROR] Failed to save terminal session: " + e.getMessage());
         }
@@ -1105,7 +1322,7 @@ public class MainActivity extends AppCompatActivity {
     private void runDiagnostics() {
         closeMenu();
         runTask(() -> {
-            updateStatusLine();
+            refreshProcessUiState();
             log("[DIAG] Account: " + selectedSessionName());
             log("[DIAG] Heroku path: " + herokuPath());
             log("[DIAG] Android ABI: " + Build.SUPPORTED_ABIS[0]);
@@ -1135,7 +1352,7 @@ public class MainActivity extends AppCompatActivity {
         } else {
             log("[REPAIR] Runtime still broken. Press DOWNLOAD LINUX if needed.");
         }
-        updateStatusLine();
+        refreshProcessUiState();
     }
 
     private void updateHeroku() {
@@ -1238,7 +1455,7 @@ public class MainActivity extends AppCompatActivity {
         Process existing = terminalProcesses.get(terminalName);
         if (existing != null && existing.isAlive()) {
             log("[TERMINAL:" + terminalName + "] already running. Input will be sent there.");
-            updateStatusLine();
+            refreshProcessUiState();
             return;
         }
         startTerminalProcess(
@@ -1264,12 +1481,12 @@ public class MainActivity extends AppCompatActivity {
             pb.redirectErrorStream(true);
             Process process = pb.start();
             terminalProcesses.put(terminalName, process);
-            updateStatusLine();
+            refreshProcessUiState();
             pumpOutput(process.getInputStream());
             int code = process.waitFor();
             if (terminalProcesses.get(terminalName) == process) terminalProcesses.remove(terminalName);
             log("[TERMINAL:" + terminalName + "] exited code " + code);
-            updateStatusLine();
+            refreshProcessUiState();
         });
     }
 
@@ -1279,14 +1496,14 @@ public class MainActivity extends AppCompatActivity {
         Process process = terminalProcesses.get(terminalName);
         if (process == null || !process.isAlive()) {
             log("[TERMINAL:" + terminalName + "] not running");
-            updateStatusLine();
+            refreshProcessUiState();
             return;
         }
         process.destroy();
         try { process.destroyForcibly(); } catch (Exception ignored) {}
         terminalProcesses.remove(terminalName);
         log("[TERMINAL:" + terminalName + "] stopped");
-        updateStatusLine();
+        refreshProcessUiState();
     }
 
     private String herokuApkPatchCommand() {
@@ -1518,11 +1735,11 @@ public class MainActivity extends AppCompatActivity {
                 pb.redirectErrorStream(true);
                 Process process = pb.start();
                 currentProcess = process;
-                updateStatusLine();
+                refreshProcessUiState();
                 pumpOutput(process.getInputStream());
                 int code = process.waitFor();
                 if (currentProcess == process) currentProcess = null;
-                updateStatusLine();
+                refreshProcessUiState();
                 log("[EXIT] code " + code);
                 if (!interactive) log("[DONE] Command finished");
                 if (code == 0 && openSupportOnSuccess) {
@@ -1540,6 +1757,7 @@ public class MainActivity extends AppCompatActivity {
                 firstRun = false;
             }
             if (autoRestart) botSupervisorActive = false;
+            refreshProcessUiState();
             releaseWakeLock();
         });
     }
@@ -1629,7 +1847,7 @@ public class MainActivity extends AppCompatActivity {
             currentProcess = null;
         }
         forceStopHerokuProcesses();
-        updateStatusLine();
+        refreshProcessUiState();
         releaseWakeLock();
     }
 
@@ -1659,7 +1877,7 @@ public class MainActivity extends AppCompatActivity {
     private void clearLogs() {
         runOnUiThread(() -> logConsole.setText("Logs cleared.\n"));
         if (followOutput) scrollToBottomSoon();
-        updateStatusLine();
+        refreshProcessUiState();
     }
 
     private void openSupportChat() {
@@ -1674,10 +1892,20 @@ public class MainActivity extends AppCompatActivity {
 
     private void openGithubRepo() {
         try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/ziwupa/heroku-host-apk"));
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL));
             startActivity(intent);
         } catch (Exception e) {
             log("[WARN] Could not open GitHub: " + e.getMessage());
+        }
+    }
+
+    private void openLatestRelease() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_RELEASES_URL));
+            startActivity(intent);
+        } catch (Exception e) {
+            log("[WARN] Could not open releases: " + e.getMessage());
+            openGithubRepo();
         }
     }
 
@@ -1720,6 +1948,7 @@ public class MainActivity extends AppCompatActivity {
             inputField.setText("");
             inputField.setHint("inline bot username, e.g. my_cool_bot");
         });
+        refreshProcessUiState();
         log("[SETUP] Enter inline bot username first. It must end with 'bot'.");
         log("[SETUP] Create it in @BotFather if you don't have one, then type username below and press SEND.");
     }

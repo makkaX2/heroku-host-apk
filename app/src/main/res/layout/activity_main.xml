@@ -73,6 +73,20 @@
                 android:textColor="@color/zov_white"
                 android:textSize="12sp"
                 android:fontFamily="monospace" />
+
+            <TextView
+                android:id="@+id/updateNoticeText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_card_alt"
+                android:padding="10dp"
+                android:text="Update available. Tap to open repository."
+                android:textColor="@color/zov_info"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout
@@ -320,6 +334,13 @@
                         android:layout_width="match_parent"
                         android:layout_marginTop="8dp"
                         android:text="Reapply APK patches" />
+
+                    <Button
+                        android:id="@+id/checkUpdatesBtn"
+                        style="@style/ZovButtonInfo"
+                        android:layout_width="match_parent"
+                        android:layout_marginTop="8dp"
+                        android:text="Check updates" />
                 </LinearLayout>
 
                 <LinearLayout
