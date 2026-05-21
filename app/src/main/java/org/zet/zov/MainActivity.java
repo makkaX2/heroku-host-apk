@@ -55,6 +55,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
     private TextView statusText;
     private TextView versionInfoText;
+    private TextView hostModeText;
     private TextView forceUpdateBodyText;
     private ScrollView logScroll;
     private EditText inputField;
@@ -109,6 +110,7 @@ public class MainActivity extends AppCompatActivity {
         logConsole = findViewById(R.id.logConsole);
         statusText = findViewById(R.id.statusText);
         versionInfoText = findViewById(R.id.versionInfoText);
+        hostModeText = findViewById(R.id.hostModeText);
         forceUpdateBodyText = findViewById(R.id.forceUpdateBodyText);
         logScroll = findViewById(R.id.logScroll);
         inputField = findViewById(R.id.inputField);
@@ -308,6 +310,7 @@ public class MainActivity extends AppCompatActivity {
         updateStatusLine();
         updateInputHint();
         updateVersionInfoText();
+        updateHostModeText();
         syncForcedUpdateUi();
         syncKeepAliveState();
     }
@@ -328,6 +331,21 @@ public class MainActivity extends AppCompatActivity {
             } catch (Exception e) {
                 versionInfoText.setText("app version: unavailable | last check: " + lastUpdateCheckLabel);
             }
+        });
+    }
+
+    private void updateHostModeText() {
+        if (hostModeText == null) return;
+        runOnUiThread(() -> {
+            String mode;
+            if (updateRequired) {
+                mode = "host mode: locked until update";
+            } else if (hasActiveRuntime() || botSupervisorActive) {
+                mode = "host mode: protected runtime";
+            } else {
+                mode = "host mode: standard standby";
+            }
+            hostModeText.setText(mode);
         });
     }
 
