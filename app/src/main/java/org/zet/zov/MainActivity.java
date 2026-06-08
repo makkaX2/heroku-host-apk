@@ -1,12 +1,14 @@
 package org.zet.zov;
 
+import android.animation.ArgbEvaluator;
+import android.animation.ValueAnimator;
 import android.app.ActivityManager;
-import android.content.ClipData;
-import android.content.ClipboardManager;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.AssetManager;
 import android.content.pm.PackageInfo;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
@@ -16,12 +18,10 @@ import android.provider.Settings;
 import android.system.Os;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.AdapterView;
+import android.view.animation.AccelerateDecelerateInterpolator;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ScrollView;
-import android.widget.ArrayAdapter;
-import android.widget.Spinner;
 import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
@@ -35,16 +35,11 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.URL;
 import java.net.URLConnection;
 import java.nio.file.Files;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Date;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -54,51 +49,39 @@ import java.util.zip.GZIPInputStream;
 public class MainActivity extends AppCompatActivity {
     private TextView logConsole;
     private TextView statusText;
-    private TextView versionInfoText;
-    private TextView hostModeText;
     private TextView forceUpdateBodyText;
     private ScrollView logScroll;
-    private EditText inputField;
-    private Button followOutputBtn;
-    private Spinner sessionSpinner;
-    private Spinner terminalSpinner;
-    private View actionPanel;
+    private View buttonsPanel;
+    private View startGroup;
+    private View runningGroup;
+    private Button setupBtn;
+    private Button cancelInstallBtn;
     private View forceUpdateOverlay;
-    private ArrayAdapter<String> sessionAdapter;
-    private ArrayAdapter<String> terminalAdapter;
-    private final ArrayList<String> sessionProfiles = new ArrayList<>();
-    private final ArrayList<String> terminalProfiles = new ArrayList<>();
-    private final Map<String, Process> terminalProcesses = new HashMap<>();
+    private volatile boolean installCancelled = false;
+    private Thread installThread;
     private Process currentProcess;
     private File baseDir;
     private File rootfsDir;
     private File supportDir;
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
-    private boolean waitingForInlineBot = false;
-    private boolean waitingForSessionName = false;
-    private boolean waitingForTerminalName = false;
     private boolean manualStop = false;
     private boolean botAutoRestartEnabled = false;
     private boolean botSupervisorActive = false;
-    private boolean followOutput = true;
     private boolean scrollScheduled = false;
-    private Thread metricsThread;
     private Thread keepAliveWatchdogThread;
     private volatile boolean keepAliveWatchdogRunning = false;
     private long lastCpuTotal = 0;
     private long lastCpuIdle = 0;
     private double lastCpuPercent = -1;
     private String lastKeepAliveSignature = "";
-    private String lastUpdateCheckLabel = "never";
     private boolean updateRequired = false;
-    private static final String SUPPORT_URL = "https://t.me/herokuapk";
-    private static final String GITHUB_REPO_URL = "https://github.com/ziwupa/heroku-host-apk";
+
     private static final String GITHUB_RELEASES_URL = "https://github.com/ziwupa/heroku-host-apk/releases/latest";
+    private static final String GITHUB_REPO_URL = "https://github.com/ziwupa/heroku-host-apk";
     private static final String REMOTE_BUILD_GRADLE_URL = "https://raw.githubusercontent.com/ziwupa/heroku-host-apk/main/app/build.gradle";
     private static final int MAX_LOG_CHARS = 90000;
     private static final String PATCH_MARKER = ".herokuapk_patch_v33";
-
     private static final String UBUNTU_BASE = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/";
 
     @Override
@@ -107,39 +90,20 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
+        View rootView = findViewById(R.id.rootView);
         logConsole = findViewById(R.id.logConsole);
-        statusText = findViewById(R.id.statusText);
-        versionInfoText = findViewById(R.id.versionInfoText);
-        hostModeText = findViewById(R.id.hostModeText);
-        forceUpdateBodyText = findViewById(R.id.forceUpdateBodyText);
         logScroll = findViewById(R.id.logScroll);
-        inputField = findViewById(R.id.inputField);
-        followOutputBtn = findViewById(R.id.followOutputBtn);
-        sessionSpinner = findViewById(R.id.sessionSpinner);
-        terminalSpinner = findViewById(R.id.terminalSpinner);
-        actionPanel = findViewById(R.id.actionPanel);
+        statusText = findViewById(R.id.statusText);
+        forceUpdateBodyText = findViewById(R.id.forceUpdateBodyText);
         forceUpdateOverlay = findViewById(R.id.forceUpdateOverlay);
-        Button menuToggleBtn = findViewById(R.id.menuToggleBtn);
-        Button menuCloseBtn = findViewById(R.id.menuCloseBtn);
-        Button installLinuxBtn = findViewById(R.id.installLinuxBtn);
-        Button installHerokuBtn = findViewById(R.id.installHerokuBtn);
+        buttonsPanel = findViewById(R.id.buttonsPanel);
+        startGroup = findViewById(R.id.startGroup);
+        runningGroup = findViewById(R.id.runningGroup);
+        setupBtn = findViewById(R.id.setupBtn);
+        cancelInstallBtn = findViewById(R.id.cancelInstallBtn);
         Button startBotBtn = findViewById(R.id.startBotBtn);
-        Button terminalBtn = findViewById(R.id.terminalBtn);
         Button stopBtn = findViewById(R.id.stopBtn);
-        Button copyLogsBtn = findViewById(R.id.copyLogsBtn);
-        Button supportBtn = findViewById(R.id.supportBtn);
-        Button addSessionBtn = findViewById(R.id.addSessionBtn);
-        Button checkStatusBtn = findViewById(R.id.checkStatusBtn);
-        Button repairBtn = findViewById(R.id.repairBtn);
-        Button updateHerokuBtn = findViewById(R.id.updateHerokuBtn);
-        Button reapplyPatchesBtn = findViewById(R.id.reapplyPatchesBtn);
-        Button checkUpdatesBtn = findViewById(R.id.checkUpdatesBtn);
-        Button addTerminalBtn = findViewById(R.id.addTerminalBtn);
-        Button stopTerminalBtn = findViewById(R.id.stopTerminalBtn);
-        Button clearLogsBtn = findViewById(R.id.clearLogsBtn);
-        Button githubBtn = findViewById(R.id.githubBtn);
-        Button bottomBtn = findViewById(R.id.bottomBtn);
-        Button sendInputBtn = findViewById(R.id.sendInputBtn);
+        Button restartBtn = findViewById(R.id.restartBtn);
         Button updateNowBtn = findViewById(R.id.updateNowBtn);
         Button checkAgainBtn = findViewById(R.id.checkAgainBtn);
 
@@ -148,57 +112,41 @@ public class MainActivity extends AppCompatActivity {
         supportDir = new File(baseDir, "support");
         baseDir.mkdirs();
         supportDir.mkdirs();
-        requestBackgroundWorkPermission();
-        startHostMetricsWriter();
-        startKeepAliveWatchdog();
-        loadSessionProfiles();
-        setupSessionMenu();
-        loadTerminalProfiles();
-        setupTerminalMenu();
 
-        menuToggleBtn.setOnClickListener(v -> toggleMenu());
-        menuCloseBtn.setOnClickListener(v -> closeMenu());
-        installLinuxBtn.setOnClickListener(v -> runTask(this::installLinux));
-        installHerokuBtn.setOnClickListener(v -> runTask(this::installHeroku));
+        requestBackgroundWorkPermission();
+        startKeepAliveWatchdog();
+
         startBotBtn.setOnClickListener(v -> startInteractiveBot());
-        terminalBtn.setOnClickListener(v -> startTerminalSession());
         stopBtn.setOnClickListener(v -> stopCurrentProcess());
-        copyLogsBtn.setOnClickListener(v -> copyLogs());
-        supportBtn.setOnClickListener(v -> openSupportChat());
-        addSessionBtn.setOnClickListener(v -> askSessionName());
-        checkStatusBtn.setOnClickListener(v -> runDiagnostics());
-        repairBtn.setOnClickListener(v -> runTask(this::repairRuntime));
-        updateHerokuBtn.setOnClickListener(v -> updateHeroku());
-        reapplyPatchesBtn.setOnClickListener(v -> reapplyPatches());
-        checkUpdatesBtn.setOnClickListener(v -> {
+        restartBtn.setOnClickListener(v -> restartBot());
+        cancelInstallBtn.setOnClickListener(v -> cancelInstall());
+        updateNowBtn.setOnClickListener(v -> openLatestRelease());
+        checkAgainBtn.setOnClickListener(v -> {
             log("[UPDATE] Manual check requested");
             checkForUpdatesAsync();
         });
-        addTerminalBtn.setOnClickListener(v -> askTerminalName());
-        stopTerminalBtn.setOnClickListener(v -> stopSelectedTerminal());
-        clearLogsBtn.setOnClickListener(v -> clearLogs());
-        githubBtn.setOnClickListener(v -> openGithubRepo());
-        followOutputBtn.setOnClickListener(v -> toggleFollowOutput());
-        bottomBtn.setOnClickListener(v -> scrollToBottomNow());
-        sendInputBtn.setOnClickListener(v -> sendInput());
-        updateNowBtn.setOnClickListener(v -> openLatestRelease());
-        checkAgainBtn.setOnClickListener(v -> {
-            log("[UPDATE] Forced re-check requested");
-            checkForUpdatesAsync();
-        });
-        updateVersionInfoText();
+
+        startAnimatedBackground(rootView);
 
         log("[INFO] Heroku Host ready");
-        log("[INFO] Account profile: " + selectedSessionName());
-        log("[INFO] Step 1: LINUX, then HEROKU, then START");
         checkForUpdatesAsync();
+
+        if (!isRootfsValid() || !isHerokuInstalledForSelectedAccount()) {
+            setupBtn.setVisibility(View.VISIBLE);
+            log("[INFO] Press INSTALL to set up the environment.");
+            setupBtn.setOnClickListener(v -> startInstall());
+        } else {
+            log("[INFO] Already installed. Ready.");
+            showButtonsPanel();
+        }
+
         refreshProcessUiState();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        if (followOutput) scrollToBottomSoon();
+        scrollToBottomSoon();
         refreshProcessUiState();
     }
 
@@ -206,28 +154,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         keepAliveWatchdogRunning = false;
         super.onDestroy();
-    }
-
-    private void toggleMenu() {
-        if (actionPanel == null) return;
-        if (actionPanel.getVisibility() == View.VISIBLE) {
-            closeMenu();
-            return;
-        }
-        actionPanel.setVisibility(View.VISIBLE);
-        actionPanel.post(() -> {
-            actionPanel.setTranslationX(-actionPanel.getWidth());
-            actionPanel.animate().translationX(0).setDuration(180).start();
-        });
-    }
-
-    private void closeMenu() {
-        if (actionPanel == null || actionPanel.getVisibility() != View.VISIBLE) return;
-        actionPanel.animate()
-            .translationX(-actionPanel.getWidth())
-            .setDuration(160)
-            .withEndAction(() -> actionPanel.setVisibility(View.GONE))
-            .start();
     }
 
     private interface Task { void run() throws Exception; }
@@ -245,9 +171,89 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
+    private void startAnimatedBackground(View root) {
+        final int bottom = 0xFF050B14;   // fixed — matches navigation bar
+        final int mid    = 0xFF0A1A30;   // fixed
+        final int topA   = 0xFF112844;
+        final int topB   = 0xFF1B3A63;
+        final GradientDrawable gd = new GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM, new int[]{ topA, mid, bottom });
+        root.setBackground(gd);
+        ValueAnimator anim = ValueAnimator.ofObject(new ArgbEvaluator(), topA, topB);
+        anim.setDuration(16000);                       // slow: ~32s full breath
+        anim.setRepeatCount(ValueAnimator.INFINITE);
+        anim.setRepeatMode(ValueAnimator.REVERSE);
+        anim.setInterpolator(new AccelerateDecelerateInterpolator());
+        anim.addUpdateListener(a -> {
+            int top = (int) a.getAnimatedValue();
+            gd.setColors(new int[]{ top, mid, bottom });
+            getWindow().setStatusBarColor(top);        // status bar follows the top shimmer
+        });
+        anim.start();
+    }
+
+    private void startInstall() {
+        installCancelled = false;
+        runOnUiThread(() -> {
+            setupBtn.setVisibility(View.GONE);
+            cancelInstallBtn.setVisibility(View.VISIBLE);
+        });
+        installThread = new Thread(() -> {
+            acquireWakeLock();
+            try {
+                if (!isRootfsValid()) installLinux();
+                if (!isHerokuInstalledForSelectedAccount()) installHeroku();
+                showButtonsPanel();
+            } catch (Exception e) {
+                if (installCancelled) log("[INFO] Installation cancelled.");
+                else log("[ERROR] " + e.getClass().getSimpleName() + ": " + e.getMessage());
+                runOnUiThread(() -> setupBtn.setVisibility(View.VISIBLE));
+            } finally {
+                runOnUiThread(() -> cancelInstallBtn.setVisibility(View.GONE));
+                releaseWakeLock();
+            }
+        });
+        installThread.start();
+    }
+
+    private void cancelInstall() {
+        installCancelled = true;
+        if (currentProcess != null) {
+            currentProcess.destroy();
+            try { currentProcess.destroyForcibly(); } catch (Exception ignored) {}
+            currentProcess = null;
+        }
+        if (installThread != null) installThread.interrupt();
+        log("[INFO] Cancelling installation...");
+    }
+
+    private void showButtonsPanel() {
+        runOnUiThread(() -> {
+            logScroll.setVisibility(View.GONE);
+            setupBtn.setVisibility(View.GONE);
+            cancelInstallBtn.setVisibility(View.GONE);
+            buttonsPanel.setVisibility(View.VISIBLE);
+        });
+    }
+
+    private void restartBot() {
+        new Thread(() -> {
+            stopCurrentProcess();
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+            startInteractiveBot();
+        }).start();
+    }
+
+    private void updateStatusText() {
+        if (statusText == null) return;
+        runOnUiThread(() -> {
+            boolean running = currentProcess != null && currentProcess.isAlive();
+            statusText.setText(running ? "● running" : "○ stopped");
+        });
+    }
+
     private void requestBackgroundWorkPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
-
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
@@ -285,34 +291,24 @@ public class MainActivity extends AppCompatActivity {
         appendOutput(msg + "\n");
     }
 
-    private void updateStatusLine() {
-        if (statusText == null) return;
-        runOnUiThread(() -> {
-            String linux = isRootfsValid() ? "Linux OK" : "Linux missing";
-            String heroku = isHerokuInstalledForSelectedAccount() ? "Heroku OK" : "Heroku missing";
-            String bot = currentProcess != null && currentProcess.isAlive() ? "running" : (botSupervisorActive ? "watching" : "stopped");
-            String terminal = selectedTerminalName();
-            String terminalState = isTerminalAlive(terminal) ? "on" : "off";
-            String keepalive = (hasActiveRuntime() || botSupervisorActive) ? "on" : "off";
-            statusText.setText(
-                "account: " + selectedSessionName()
-                    + " | " + linux
-                    + " | " + heroku
-                    + " | bot: " + bot
-                    + " | terms: " + activeTerminalCount()
-                    + " | " + terminal + ": " + terminalState
-                    + " | keepalive: " + keepalive
-            );
-        });
-    }
-
     private void refreshProcessUiState() {
-        updateStatusLine();
-        updateInputHint();
-        updateVersionInfoText();
-        updateHostModeText();
         syncForcedUpdateUi();
         syncKeepAliveState();
+        updateStatusText();
+        updateContextButtons();
+    }
+
+    private boolean isBotActive() {
+        return botSupervisorActive || (currentProcess != null && currentProcess.isAlive());
+    }
+
+    private void updateContextButtons() {
+        if (startGroup == null || runningGroup == null) return;
+        runOnUiThread(() -> {
+            boolean active = isBotActive();
+            startGroup.setVisibility(active ? View.GONE : View.VISIBLE);
+            runningGroup.setVisibility(active ? View.VISIBLE : View.GONE);
+        });
     }
 
     private void syncForcedUpdateUi() {
@@ -320,62 +316,9 @@ public class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> forceUpdateOverlay.setVisibility(updateRequired ? View.VISIBLE : View.GONE));
     }
 
-    private void updateVersionInfoText() {
-        if (versionInfoText == null) return;
-        runOnUiThread(() -> {
-            try {
-                PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
-                String versionName = packageInfo.versionName == null ? "?" : packageInfo.versionName;
-                int versionCode = packageInfo.versionCode;
-                versionInfoText.setText("app version: v" + versionName + " (" + versionCode + ") | last check: " + lastUpdateCheckLabel);
-            } catch (Exception e) {
-                versionInfoText.setText("app version: unavailable | last check: " + lastUpdateCheckLabel);
-            }
-        });
-    }
-
-    private void updateHostModeText() {
-        if (hostModeText == null) return;
-        runOnUiThread(() -> {
-            String mode;
-            if (updateRequired) {
-                mode = "host mode: locked until update";
-            } else if (hasActiveRuntime() || botSupervisorActive) {
-                mode = "host mode: protected runtime";
-            } else {
-                mode = "host mode: standard standby";
-            }
-            hostModeText.setText(mode);
-        });
-    }
-
-    private void updateInputHint() {
-        if (inputField == null) return;
-        runOnUiThread(() -> {
-            String hint;
-            Process terminal = terminalProcesses.get(selectedTerminalName());
-            if (waitingForInlineBot) {
-                hint = "inline bot username, e.g. my_cool_bot";
-            } else if (waitingForSessionName) {
-                hint = "enter new account profile name";
-            } else if (waitingForTerminalName) {
-                hint = "enter new terminal session name";
-            } else if (terminal != null && terminal.isAlive()) {
-                hint = "send input to terminal: " + selectedTerminalName();
-            } else if (currentProcess != null && currentProcess.isAlive()) {
-                hint = "send input to userbot process";
-            } else {
-                hint = "send input to active process";
-            }
-            inputField.setHint(hint);
-        });
-    }
-
     private void checkForUpdatesAsync() {
         new Thread(() -> {
             try {
-                lastUpdateCheckLabel = new SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(new Date());
-                updateVersionInfoText();
                 PackageInfo packageInfo = getPackageManager().getPackageInfo(getPackageName(), 0);
                 int localVersionCode = packageInfo.versionCode;
                 String localVersionName = packageInfo.versionName == null ? "?" : packageInfo.versionName;
@@ -384,9 +327,9 @@ public class MainActivity extends AppCompatActivity {
                 String remoteVersionName = parseVersionName(remoteBuildGradle);
                 if (remoteVersionCode > localVersionCode) {
                     updateRequired = true;
-                    String text = "Update available: local v"
-                        + localVersionName + " (" + localVersionCode + ") -> remote v"
-                        + remoteVersionName + " (" + remoteVersionCode + "). Tap to open latest release.";
+                    String text = "Update available: local v" + localVersionName + " (" + localVersionCode
+                        + ") -> remote v" + remoteVersionName + " (" + remoteVersionCode
+                        + "). Tap to open latest release.";
                     showForcedUpdate(text, true);
                     log("[UPDATE] " + text);
                 } else {
@@ -411,9 +354,7 @@ public class MainActivity extends AppCompatActivity {
              BufferedReader reader = new BufferedReader(isr)) {
             StringBuilder sb = new StringBuilder();
             String line;
-            while ((line = reader.readLine()) != null) {
-                sb.append(line).append('\n');
-            }
+            while ((line = reader.readLine()) != null) sb.append(line).append('\n');
             return sb.toString();
         }
     }
@@ -432,39 +373,20 @@ public class MainActivity extends AppCompatActivity {
 
     private void showForcedUpdate(String text, boolean visible) {
         runOnUiThread(() -> {
-            if (forceUpdateOverlay != null) {
+            if (forceUpdateOverlay != null)
                 forceUpdateOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
-            }
-            if (forceUpdateBodyText != null) {
+            if (forceUpdateBodyText != null)
                 forceUpdateBodyText.setText(text);
-            }
         });
     }
 
     private boolean hasActiveRuntime() {
-        if (currentProcess != null && currentProcess.isAlive()) return true;
-        for (Process process : terminalProcesses.values()) {
-            if (process != null && process.isAlive()) return true;
-        }
-        return false;
-    }
-
-    private int activeTerminalCount() {
-        int count = 0;
-        for (Process process : terminalProcesses.values()) {
-            if (process != null && process.isAlive()) count++;
-        }
-        return count;
+        return currentProcess != null && currentProcess.isAlive();
     }
 
     private String activeRuntimeSummary() {
-        if (currentProcess != null && currentProcess.isAlive()) {
+        if (currentProcess != null && currentProcess.isAlive())
             return botSupervisorActive ? "Userbot active with watchdog" : "Userbot active";
-        }
-        int terminalCount = activeTerminalCount();
-        if (terminalCount > 0) {
-            return terminalCount == 1 ? "1 terminal session active" : terminalCount + " terminal sessions active";
-        }
         if (botSupervisorActive) return "Watchdog armed for userbot";
         return "No active runtime";
     }
@@ -475,7 +397,6 @@ public class MainActivity extends AppCompatActivity {
         String signature = shouldStayAlive + "|" + summary;
         if (signature.equals(lastKeepAliveSignature)) return;
         lastKeepAliveSignature = signature;
-
         if (shouldStayAlive) {
             acquireWakeLock();
             acquireWifiLock();
@@ -523,7 +444,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void releaseWifiLock() {
         try {
-            if ((hasActiveRuntime() || botSupervisorActive) || wifiLock == null || !wifiLock.isHeld()) return;
+            if (hasActiveRuntime() || botSupervisorActive || wifiLock == null || !wifiLock.isHeld()) return;
             wifiLock.release();
         } catch (Exception ignored) {}
     }
@@ -537,30 +458,17 @@ public class MainActivity extends AppCompatActivity {
                 CharSequence text = logConsole.getText();
                 logConsole.setText(text.subSequence(text.length() - MAX_LOG_CHARS, text.length()));
             }
-            if (followOutput) scrollToBottomSoon();
+            scrollToBottomSoon();
         });
     }
 
-    private void toggleFollowOutput() {
-        followOutput = !followOutput;
-        if (followOutputBtn != null) {
-            followOutputBtn.setText(followOutput ? "FOLLOW: ON" : "FOLLOW: OFF");
-        }
-        if (followOutput) scrollToBottomNow();
-    }
-
     private void scrollToBottomSoon() {
-        if (scrollScheduled || logScroll == null) return;
+        if (scrollScheduled || logScroll == null || logScroll.getVisibility() != View.VISIBLE) return;
         scrollScheduled = true;
         logScroll.postDelayed(() -> {
             scrollScheduled = false;
-            scrollToBottomNow();
+            if (logScroll != null) logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
         }, 80);
-    }
-
-    private void scrollToBottomNow() {
-        if (logScroll == null) return;
-        logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private String filterLogText(String msg) {
@@ -579,195 +487,26 @@ public class MainActivity extends AppCompatActivity {
         return out.toString();
     }
 
-    private File sessionsFile() {
-        return new File(baseDir, "sessions.txt");
-    }
-
-    private File terminalSessionsFile() {
-        return new File(baseDir, "terminal_sessions.txt");
-    }
-
-    private void loadSessionProfiles() {
-        sessionProfiles.clear();
-        sessionProfiles.add("main");
-        try {
-            File file = sessionsFile();
-            if (file.exists()) {
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file)))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        String profile = sanitizeSessionName(line);
-                        if (!profile.isEmpty() && !sessionProfiles.contains(profile)) sessionProfiles.add(profile);
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        Collections.sort(sessionProfiles.subList(1, sessionProfiles.size()));
-    }
-
-    private void setupSessionMenu() {
-        sessionAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, sessionProfiles);
-        sessionAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        sessionSpinner.setAdapter(sessionAdapter);
-        String saved = loadSelectedSessionName();
-        int index = sessionProfiles.indexOf(saved);
-        if (index >= 0) sessionSpinner.setSelection(index);
-        sessionSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                try { saveSelectedSessionName(sessionProfiles.get(position)); } catch (Exception ignored) {}
-                refreshProcessUiState();
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
-    }
-
-    private void loadTerminalProfiles() {
-        terminalProfiles.clear();
-        terminalProfiles.add("term1");
-        try {
-            File file = terminalSessionsFile();
-            if (file.exists()) {
-                try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(file)))) {
-                    String line;
-                    while ((line = br.readLine()) != null) {
-                        String profile = sanitizeSessionName(line);
-                        if (!profile.isEmpty() && !terminalProfiles.contains(profile)) terminalProfiles.add(profile);
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        Collections.sort(terminalProfiles.subList(1, terminalProfiles.size()));
-    }
-
-    private void setupTerminalMenu() {
-        terminalAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, terminalProfiles);
-        terminalAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        terminalSpinner.setAdapter(terminalAdapter);
-        String saved = loadSelectedTerminalName();
-        int index = terminalProfiles.indexOf(saved);
-        if (index >= 0) terminalSpinner.setSelection(index);
-        terminalSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                try { saveSelectedTerminalName(terminalProfiles.get(position)); } catch (Exception ignored) {}
-                refreshProcessUiState();
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
-    }
-
-    private File selectedSessionFile() {
-        return new File(baseDir, "selected_session.txt");
-    }
-
-    private File selectedTerminalFile() {
-        return new File(baseDir, "selected_terminal.txt");
-    }
-
-    private String loadSelectedSessionName() {
-        try {
-            File file = selectedSessionFile();
-            if (!file.exists()) return "main";
-            byte[] data = new byte[(int) file.length()];
-            try (FileInputStream in = new FileInputStream(file)) {
-                int read = in.read(data);
-                if (read <= 0) return "main";
-            }
-            String selected = sanitizeSessionName(new String(data));
-            return selected.isEmpty() ? "main" : selected;
-        } catch (Exception ignored) {
-            return "main";
-        }
-    }
-
-    private void saveSelectedSessionName(String profile) throws Exception {
-        writeFile(selectedSessionFile(), sanitizeSessionName(profile) + "\n");
-    }
-
-    private String loadSelectedTerminalName() {
-        try {
-            File file = selectedTerminalFile();
-            if (!file.exists()) return "term1";
-            byte[] data = new byte[(int) file.length()];
-            try (FileInputStream in = new FileInputStream(file)) {
-                int read = in.read(data);
-                if (read <= 0) return "term1";
-            }
-            String selected = sanitizeSessionName(new String(data));
-            return selected.isEmpty() ? "term1" : selected;
-        } catch (Exception ignored) {
-            return "term1";
-        }
-    }
-
-    private void saveSelectedTerminalName(String profile) throws Exception {
-        writeFile(selectedTerminalFile(), sanitizeSessionName(profile) + "\n");
-    }
-
-    private void saveSessionProfiles() throws Exception {
-        StringBuilder data = new StringBuilder();
-        for (String profile : sessionProfiles) data.append(profile).append('\n');
-        writeFile(sessionsFile(), data.toString());
-    }
-
-    private void saveTerminalProfiles() throws Exception {
-        StringBuilder data = new StringBuilder();
-        for (String profile : terminalProfiles) data.append(profile).append('\n');
-        writeFile(terminalSessionsFile(), data.toString());
-    }
-
     private String selectedSessionName() {
-        Object selected = sessionSpinner == null ? null : sessionSpinner.getSelectedItem();
-        String profile = sanitizeSessionName(selected == null ? "main" : selected.toString());
-        return profile.isEmpty() ? "main" : profile;
-    }
-
-    private String selectedTerminalName() {
-        Object selected = terminalSpinner == null ? null : terminalSpinner.getSelectedItem();
-        String profile = sanitizeSessionName(selected == null ? "term1" : selected.toString());
-        return profile.isEmpty() ? "term1" : profile;
-    }
-
-    private boolean isTerminalAlive(String name) {
-        Process process = terminalProcesses.get(name);
-        return process != null && process.isAlive();
-    }
-
-    private String sanitizeSessionName(String input) {
-        if (input == null) return "";
-        String name = input.trim().toLowerCase(java.util.Locale.US).replace("@", "");
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < name.length(); i++) {
-            char ch = name.charAt(i);
-            boolean ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
-            if (ok) out.append(ch);
-        }
-        return out.toString();
+        return "main";
     }
 
     private String herokuDirName() {
-        String profile = selectedSessionName();
-        return profile.equals("main") ? "Heroku" : "Heroku-" + profile;
+        return "Heroku";
     }
 
     private String herokuPath() {
-        return "/root/" + herokuDirName();
+        return "/root/Heroku";
     }
 
     private File herokuRootfsDir() {
-        return new File(rootfsDir, "root/" + herokuDirName());
+        return new File(rootfsDir, "root/Heroku");
     }
 
     private boolean isHerokuInstalledForSelectedAccount() {
         File dir = herokuRootfsDir();
-        return new File(dir, "heroku").exists()
-            && fileExistsOrSymlink(new File(dir, ".venv/bin/python"))
-                || (new File(dir, "heroku").exists() && fileExistsOrSymlink(new File(dir, ".venv/bin/python3")));
+        return (new File(dir, "heroku").exists() && fileExistsOrSymlink(new File(dir, ".venv/bin/python")))
+            || (new File(dir, "heroku").exists() && fileExistsOrSymlink(new File(dir, ".venv/bin/python3")));
     }
 
     private boolean fileExistsOrSymlink(File file) {
@@ -778,191 +517,247 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void askSessionName() {
-        waitingForSessionName = true;
-        runOnUiThread(() -> {
-            inputField.setText("");
-            inputField.setHint("session name, e.g. second");
-        });
-        refreshProcessUiState();
-        log("[SETUP] Type new account profile name and press SEND.");
+    private File inlineBotFile() {
+        return new File(baseDir, "inline_bot_username.txt");
     }
 
-    private void askTerminalName() {
-        waitingForTerminalName = true;
-        runOnUiThread(() -> {
-            inputField.setText("");
-            inputField.setHint("terminal name, e.g. deps");
-        });
-        refreshProcessUiState();
-        log("[SETUP] Type new terminal session name and press SEND.");
-    }
-
-    private void saveNewSession(String rawName) {
-        String profile = sanitizeSessionName(rawName);
-        if (profile.isEmpty()) {
-            log("[ERROR] Invalid session name. Use a-z, 0-9, _ or -.");
-            askSessionName();
-            return;
-        }
+    private String getInlineBotUsername() {
         try {
-            if (!sessionProfiles.contains(profile)) {
-                sessionProfiles.add(profile);
-                Collections.sort(sessionProfiles.subList(1, sessionProfiles.size()));
-                saveSessionProfiles();
-                setupSessionMenu();
+            File file = inlineBotFile();
+            if (!file.exists()) return "";
+            byte[] data = new byte[(int) file.length()];
+            try (FileInputStream in = new FileInputStream(file)) {
+                int read = in.read(data);
+                if (read <= 0) return "";
             }
-            sessionSpinner.setSelection(sessionProfiles.indexOf(profile));
-            saveSelectedSessionName(profile);
-            waitingForSessionName = false;
-            log("[OK] Account profile selected: " + profile);
-            log("[INFO] For another Telegram account press HEROKU, then START and login with its phone.");
-            refreshProcessUiState();
-        } catch (Exception e) {
-            log("[ERROR] Failed to save session: " + e.getMessage());
-        }
-    }
-
-    private void saveNewTerminal(String rawName) {
-        String profile = sanitizeSessionName(rawName);
-        if (profile.isEmpty()) {
-            log("[ERROR] Invalid terminal name. Use a-z, 0-9, _ or -.");
-            askTerminalName();
-            return;
-        }
-        try {
-            if (!terminalProfiles.contains(profile)) {
-                terminalProfiles.add(profile);
-                Collections.sort(terminalProfiles.subList(1, terminalProfiles.size()));
-                saveTerminalProfiles();
-                setupTerminalMenu();
-            }
-            terminalSpinner.setSelection(terminalProfiles.indexOf(profile));
-            saveSelectedTerminalName(profile);
-            waitingForTerminalName = false;
-            log("[OK] Terminal session selected: " + profile);
-            log("[INFO] Press OPEN SELECTED TERMINAL to start it.");
-            refreshProcessUiState();
-        } catch (Exception e) {
-            log("[ERROR] Failed to save terminal session: " + e.getMessage());
-        }
-    }
-
-    private void startHostMetricsWriter() {
-        if (metricsThread != null && metricsThread.isAlive()) return;
-        metricsThread = new Thread(() -> {
-            while (true) {
-                try {
-                    writeHostInfo();
-                    Thread.sleep(2000);
-                } catch (Exception ignored) {
-                    try { Thread.sleep(5000); } catch (InterruptedException ignored2) {}
-                }
-            }
-        });
-        metricsThread.setDaemon(true);
-        metricsThread.start();
-    }
-
-    private void writeHostInfo() throws Exception {
-        supportDir.mkdirs();
-        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
-        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
-        long total = 0;
-        long avail = 0;
-        if (am != null) {
-            am.getMemoryInfo(mi);
-            total = mi.totalMem;
-            avail = mi.availMem;
-        }
-        long usedMb = Math.max(total - avail, 0) / 1024 / 1024;
-        long totalMb = Math.max(total, 0) / 1024 / 1024;
-        double cpu = sampleCpuPercent();
-        String cpuPercent = cpu >= 0 ? String.format(java.util.Locale.US, "%.1f%%", cpu) : "N/A";
-        int cores = Runtime.getRuntime().availableProcessors();
-        String json = "{"
-            + "\"host\":\"herokuapk\"," 
-            + "\"cpu_usage\":\"" + cpuPercent + "\"," 
-            + "\"ram_usage\":\"" + usedMb + " MB\"," 
-            + "\"cpu\":\"" + cores + " (" + cores + ") core(-s); " + cpuPercent + " total\"," 
-            + "\"ram_total\":\"" + totalMb + " MB\""
-            + "}";
-        writeFile(new File(supportDir, "host_info.json"), json);
-    }
-
-    private double sampleCpuPercent() {
-        try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream("/proc/stat")))) {
-            String line = br.readLine();
-            if (line == null || !line.startsWith("cpu ")) return lastCpuPercent;
-            String[] parts = line.trim().split("\\s+");
-            long user = Long.parseLong(parts[1]);
-            long nice = Long.parseLong(parts[2]);
-            long system = Long.parseLong(parts[3]);
-            long idle = Long.parseLong(parts[4]);
-            long iowait = parts.length > 5 ? Long.parseLong(parts[5]) : 0;
-            long irq = parts.length > 6 ? Long.parseLong(parts[6]) : 0;
-            long softirq = parts.length > 7 ? Long.parseLong(parts[7]) : 0;
-            long steal = parts.length > 8 ? Long.parseLong(parts[8]) : 0;
-            long idleAll = idle + iowait;
-            long total = user + nice + system + idle + iowait + irq + softirq + steal;
-            if (lastCpuTotal == 0) {
-                lastCpuTotal = total;
-                lastCpuIdle = idleAll;
-                return lastCpuPercent;
-            }
-            long totalDelta = total - lastCpuTotal;
-            long idleDelta = idleAll - lastCpuIdle;
-            lastCpuTotal = total;
-            lastCpuIdle = idleAll;
-            if (totalDelta <= 0) return lastCpuPercent;
-            lastCpuPercent = Math.max(0, Math.min(100, (totalDelta - idleDelta) * 100.0 / totalDelta));
-            return lastCpuPercent;
+            return new String(data).trim().replace("@", "");
         } catch (Exception ignored) {
-            return sampleTopCpuPercent();
+            return "";
         }
     }
 
-    private double sampleTopCpuPercent() {
-        try {
-            Process process = new ProcessBuilder("/system/bin/top", "-b", "-n", "1").redirectErrorStream(true).start();
-            try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    String lower = line.toLowerCase(java.util.Locale.US);
-                    if (lower.contains("%cpu") || lower.startsWith("cpu") || lower.contains(" cpu ")) {
-                        double parsed = parseFirstPercentNumber(line);
-                        if (parsed >= 0) {
-                            lastCpuPercent = Math.max(0, Math.min(100, parsed));
-                            return lastCpuPercent;
-                        }
-                    }
-                }
-            }
-            process.waitFor();
-        } catch (Exception ignored) {}
-        return lastCpuPercent;
+    private boolean isInlineBotUsernameValid(String username) {
+        if (username == null) return false;
+        username = username.trim().replace("@", "");
+        if (username.length() <= 4 || !username.toLowerCase().endsWith("bot")) return false;
+        for (int i = 0; i < username.length(); i++) {
+            char ch = username.charAt(i);
+            boolean ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+            if (!ok) return false;
+        }
+        return true;
     }
 
-    private double parseFirstPercentNumber(String line) {
-        ArrayList<Double> values = new ArrayList<>();
-        for (int i = 0; i < line.length(); i++) {
-            if (line.charAt(i) != '%') continue;
-            int start = i - 1;
-            while (start >= 0) {
-                char ch = line.charAt(start);
-                if ((ch >= '0' && ch <= '9') || ch == '.') {
-                    start--;
-                } else {
+    private void askInlineBotUsername() {
+        runOnUiThread(() -> {
+            EditText input = new EditText(this);
+            input.setHint("my_cool_bot");
+            input.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+            new AlertDialog.Builder(this)
+                .setTitle("Inline Bot Username")
+                .setMessage("Enter your @BotFather bot username (must end with 'bot'):")
+                .setView(input)
+                .setPositiveButton("Save", (d, w) -> saveInlineBotUsername(input.getText().toString()))
+                .setNegativeButton("Cancel", null)
+                .show();
+        });
+    }
+
+    private void saveInlineBotUsername(String username) {
+        username = username == null ? "" : username.trim().replace("@", "");
+        if (!isInlineBotUsernameValid(username)) {
+            log("[ERROR] Invalid inline bot username. Use only a-z, 0-9, _, and it must end with bot.");
+            askInlineBotUsername();
+            return;
+        }
+        try {
+            writeFile(inlineBotFile(), username + "\n");
+            log("[OK] Inline bot username saved: @" + username);
+            startInteractiveBot();
+        } catch (Exception e) {
+            log("[ERROR] Failed to save inline bot username: " + e.getMessage());
+        }
+    }
+
+    private void startInteractiveBot() {
+        String inlineBot = getInlineBotUsername();
+        if (!isInlineBotUsernameValid(inlineBot)) {
+            askInlineBotUsername();
+            return;
+        }
+        if (!isHerokuInstalledForSelectedAccount()) {
+            log("[ERROR] Heroku is not installed. Press INSTALL first.");
+            return;
+        }
+        if (botSupervisorActive || (currentProcess != null && currentProcess.isAlive())) {
+            log("[INFO] Userbot is already running. Press STOP first if you want to restart it.");
+            return;
+        }
+        manualStop = false;
+        botAutoRestartEnabled = true;
+        botSupervisorActive = true;
+        String path = herokuPath();
+        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKUAPK=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd " + path + " && " +
+            herokuApkPatchCommand() + " && " +
+            ".venv/bin/python -u -m heroku --no-web --root", true, false, true, "START BOT", true);
+    }
+
+    private void stopCurrentProcess() {
+        manualStop = true;
+        botAutoRestartEnabled = false;
+        botSupervisorActive = false;
+        if (currentProcess != null) {
+            currentProcess.destroy();
+            try { currentProcess.destroyForcibly(); } catch (Exception ignored) {}
+            log("[INFO] Process stopped");
+            currentProcess = null;
+        }
+        forceStopHerokuProcesses();
+        refreshProcessUiState();
+        releaseWakeLock();
+    }
+
+    private void forceStopHerokuProcesses() {
+        new Thread(() -> {
+            try {
+                if (!new File(supportDir, "proot").exists() || !new File(rootfsDir, "bin/sh").exists()) return;
+                ProcessBuilder pb = new ProcessBuilder(prootCommand(cleanupStaleHerokuCommand()));
+                pb.directory(baseDir);
+                pb.environment().putAll(prootEnv());
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                process.waitFor();
+                log("[INFO] Stale userbot processes cleaned");
+            } catch (Exception e) {
+                log("[WARN] Cleanup failed: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private String cleanupStaleHerokuCommand() {
+        return "if [ -x /usr/bin/python3 ]; then /usr/bin/python3 - <<'PY'\n" +
+            "import os, signal, time\n" +
+            "me = os.getpid()\n" +
+            "parent = os.getppid()\n" +
+            "targets = []\n" +
+            "for name in os.listdir('/proc'):\n" +
+            "    if not name.isdigit():\n" +
+            "        continue\n" +
+            "    pid = int(name)\n" +
+            "    if pid in (me, parent):\n" +
+            "        continue\n" +
+            "    try:\n" +
+            "        comm = open(f'/proc/{pid}/comm', 'r').read().strip().lower()\n" +
+            "    except Exception:\n" +
+            "        continue\n" +
+            "    if 'python' not in comm:\n" +
+            "        continue\n" +
+            "    try:\n" +
+            "        cmd = open(f'/proc/{pid}/cmdline', 'rb').read().replace(b'\\0', b' ').decode('utf-8', 'ignore')\n" +
+            "    except Exception:\n" +
+            "        continue\n" +
+            "    low = cmd.lower()\n" +
+            "    if 'python' in low and (' -m heroku' in low or 'heroku.__main__' in low):\n" +
+            "        targets.append(pid)\n" +
+            "for sig in (signal.SIGTERM, signal.SIGKILL):\n" +
+            "    for pid in targets:\n" +
+            "        try:\n" +
+            "            os.kill(pid, sig)\n" +
+            "        except Exception:\n" +
+            "            pass\n" +
+            "    time.sleep(0.4)\n" +
+            "PY\n" +
+            "fi; true";
+    }
+
+    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart, String label, boolean cleanupBeforeFirstRun) {
+        runTask(() -> {
+            try { writeHostInfo(); } catch (Exception ignored) {}
+            if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
+                log("[ERROR] Linux is not installed. Press INSTALL first.");
+                if (autoRestart) botSupervisorActive = false;
+                return;
+            }
+            setupRootfs();
+            repairRootfs();
+            if (!testProotRuntime()) {
+                log("[ERROR] Linux rootfs is broken. Try re-installing.");
+                if (autoRestart) botSupervisorActive = false;
+                return;
+            }
+            if (cleanupBeforeFirstRun) runCleanupBlocking();
+            boolean firstRun = true;
+            while (true) {
+                log((firstRun ? "[CMD] " : "[RESTART] ") + label);
+                ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
+                pb.directory(baseDir);
+                pb.environment().putAll(prootEnv());
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                currentProcess = process;
+                refreshProcessUiState();
+                pumpOutput(process.getInputStream());
+                int code = process.waitFor();
+                if (currentProcess == process) currentProcess = null;
+                refreshProcessUiState();
+                log("[EXIT] code " + code);
+                if (!interactive) log("[DONE] Command finished");
+                if (!(interactive && autoRestart && botAutoRestartEnabled && !manualStop)) break;
+                if (code == 126 || code == 127) {
+                    log("[ERROR] Startup command failed. Auto-restart stopped.");
                     break;
                 }
+                if (code == 143 && manualStop) break;
+                log("[INFO] Userbot exited. Restarting in 3 seconds...");
+                try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+                firstRun = false;
             }
-            if (start + 1 < i) {
-                try { values.add(Double.parseDouble(line.substring(start + 1, i))); } catch (Exception ignored) {}
-            }
+            if (autoRestart) botSupervisorActive = false;
+            refreshProcessUiState();
+            releaseWakeLock();
+        });
+    }
+
+    private void runCleanupBlocking() {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(prootCommand(cleanupStaleHerokuCommand()));
+            pb.directory(baseDir);
+            pb.environment().putAll(prootEnv());
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            process.waitFor();
+            log("[INFO] Stale userbot processes cleaned");
+        } catch (Exception e) {
+            log("[WARN] Cleanup failed: " + e.getMessage());
         }
-        if (values.isEmpty()) return -1;
-        if (values.get(0) > 100 && values.size() > 2) return values.get(1) + values.get(2);
-        return values.get(0);
+    }
+
+    private void pumpOutput(InputStream stream) {
+        new Thread(() -> {
+            try (InputStream in = stream) {
+                byte[] buffer = new byte[2048];
+                int read;
+                while ((read = in.read(buffer)) != -1) {
+                    appendOutput(new String(buffer, 0, read));
+                }
+            } catch (Exception e) {
+                log("[OUTPUT ERROR] " + e.getMessage());
+            }
+        }).start();
+    }
+
+    private void openLatestRelease() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_RELEASES_URL)));
+        } catch (Exception e) {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL)));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private boolean isRootfsValid() {
+        return new File(rootfsDir, "bin/sh").exists() && new File(rootfsDir, "usr/bin/env").exists();
     }
 
     private String assetArch() {
@@ -987,14 +782,11 @@ public class MainActivity extends AppCompatActivity {
         log("[INFO] ABI: " + Build.SUPPORTED_ABIS[0] + " -> " + assetArch());
         baseDir.mkdirs();
         supportDir.mkdirs();
-
         installSupportAssets();
-
         if (rootfsDir.exists() && !isRootfsValid()) {
             log("[WARN] Existing rootfs is incomplete. Reinstalling rootfs...");
             deleteRecursive(rootfsDir);
         }
-
         if (!new File(rootfsDir, "bin/sh").exists()) {
             File rootfs = new File(baseDir, "ubuntu-base.tar.gz");
             download(ubuntuUrl(), rootfs);
@@ -1008,7 +800,6 @@ public class MainActivity extends AppCompatActivity {
             setupRootfs();
             repairRootfs();
         }
-
         if (!testProotRuntime()) {
             log("[WARN] runtime failed. Reinstalling rootfs...");
             deleteRecursive(rootfsDir);
@@ -1020,8 +811,40 @@ public class MainActivity extends AppCompatActivity {
             repairRootfs();
             if (!testProotRuntime()) throw new IllegalStateException("proot runtime test failed after reinstall");
         }
+        log("[DONE] Linux installed.");
+    }
 
-        log("[DONE] Linux installed. Now press INSTALL HEROKU");
+    private void installHeroku() throws Exception {
+        String dirName = herokuDirName();
+        String path = herokuPath();
+        log("[INFO] Installing Heroku...");
+        setupRootfs();
+        repairRootfs();
+        if (!testProotRuntime()) throw new IllegalStateException("Linux runtime is broken.");
+        String command = "export HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color DEBIAN_FRONTEND=noninteractive && " +
+            "dpkg --remove --force-remove-reinstreq --force-depends dbus libpam-systemd systemd-resolved networkd-dispatcher dbus-user-session dconf-service dconf-gsettings-backend libgtk-3-common gsettings-desktop-schemas libgtk-3-bin libgtk-3-0t64 at-spi2-core libdecor-0-plugin-1-gtk 2>/dev/null || true && " +
+            "apt update && apt install -y --no-install-recommends ca-certificates coreutils git python3 python3-pip python3-venv build-essential libcairo2 libmagic1 openssl && " +
+            "cd /root && if [ ! -d " + dirName + " ]; then git clone https://github.com/coddrago/Heroku " + dirName + "; fi && " +
+            "cd " + path + " && python3 -m venv .venv && " +
+            ".venv/bin/python -m pip install --upgrade pip wheel setuptools && " +
+            ".venv/bin/python -m pip install -r requirements.txt && " +
+            ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"";
+        log("[CMD] INSTALL HEROKU");
+        ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
+        pb.directory(baseDir);
+        pb.environment().putAll(prootEnv());
+        pb.redirectErrorStream(true);
+        Process process = pb.start();
+        currentProcess = process;
+        refreshProcessUiState();
+        pumpOutput(process.getInputStream());
+        int code = process.waitFor();
+        if (currentProcess == process) currentProcess = null;
+        refreshProcessUiState();
+        if (installCancelled) return;
+        log("[EXIT] code " + code);
+        if (code != 0) throw new RuntimeException("Heroku installation failed with exit code " + code);
+        log("[DONE] Heroku installed.");
     }
 
     private void installSupportAssets() throws Exception {
@@ -1031,7 +854,6 @@ public class MainActivity extends AppCompatActivity {
             normalizeSupportAssets();
             return;
         }
-
         log("[INFO] Installing embedded UserLAnd support assets...");
         copyAssetDir("userland/" + assetArch(), supportDir);
         File[] files = supportDir.listFiles();
@@ -1053,7 +875,6 @@ public class MainActivity extends AppCompatActivity {
             copySupportFile("loader32.a10", "loader32");
             copySupportFile("libtalloc.so.2.a10", "libtalloc.so.2");
         }
-
         File[] files = supportDir.listFiles();
         if (files != null) {
             for (File file : files) {
@@ -1087,7 +908,6 @@ public class MainActivity extends AppCompatActivity {
             }
             return;
         }
-
         dest.mkdirs();
         for (String entry : entries) {
             copyAssetDir(assetPath + "/" + entry, new File(dest, entry));
@@ -1102,6 +922,7 @@ public class MainActivity extends AppCompatActivity {
             int read;
             long lastLog = 0;
             while ((read = in.read(buf)) != -1) {
+                if (installCancelled) throw new java.io.InterruptedIOException("cancelled");
                 fos.write(buf, 0, read);
                 total += read;
                 if (total - lastLog > 1024 * 1024 * 5) {
@@ -1113,16 +934,17 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void extractTarGz(File tarGz, File dest) throws Exception {
-        try (TarArchiveInputStream tar = new TarArchiveInputStream(new java.io.BufferedInputStream(new GZIPInputStream(new FileInputStream(tarGz))))) {
+        try (TarArchiveInputStream tar = new TarArchiveInputStream(
+                new java.io.BufferedInputStream(new GZIPInputStream(new FileInputStream(tarGz))))) {
             TarArchiveEntry entry;
             byte[] buf = new byte[1024 * 64];
             int count = 0;
             while ((entry = tar.getNextTarEntry()) != null) {
+                if (installCancelled) throw new InterruptedException("cancelled");
                 File out = new File(dest, entry.getName());
                 String canonicalDest = dest.getCanonicalPath();
                 String canonicalOut = out.getCanonicalPath();
                 if (!canonicalOut.startsWith(canonicalDest)) continue;
-
                 if (entry.isDirectory()) {
                     out.mkdirs();
                 } else if (entry.isSymbolicLink()) {
@@ -1159,7 +981,6 @@ public class MainActivity extends AppCompatActivity {
         File support = new File(rootfsDir, "support");
         support.mkdirs();
         new File(support, "common").mkdirs();
-
         writeFile(new File(rootfsDir, "etc/resolv.conf"), "nameserver 1.1.1.1\nnameserver 8.8.8.8\n");
         writeFile(new File(rootfsDir, "etc/hosts"), "127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n");
         writeFile(new File(rootfsDir, "etc/hostname"), "localhost\n");
@@ -1170,11 +991,9 @@ public class MainActivity extends AppCompatActivity {
         writeFile(new File(support, "version"), "Linux version 6.1.0 (userland@android) #1 SMP\n");
         writeHostInfo();
         new File(support, "nosudo").setExecutable(true, false);
-
         writeExecutableScript(new File(rootfsDir, "usr/local/bin/id"), "#!/bin/sh\n/support/common/busybox id \"$@\"\n");
         writeExecutableScript(new File(rootfsDir, "usr/bin/id"), "#!/bin/sh\n/support/common/busybox id \"$@\"\n");
         writeExecutableScript(new File(rootfsDir, "bin/id"), "#!/bin/sh\n/support/common/busybox id \"$@\"\n");
-
         copyAllSupportAssetsToRootfsSupport(support);
         copySupportToRootfsSupport("stat4");
         copySupportToRootfsSupport("stat8");
@@ -1225,7 +1044,6 @@ public class MainActivity extends AppCompatActivity {
         };
         copyFirstExisting(shellCandidates, new File(rootfsDir, "usr/bin/sh"), true, true);
         copyFirstExisting(shellCandidates, new File(rootfsDir, "bin/sh"), true, true);
-
         String abi = Build.SUPPORTED_ABIS[0];
         if (abi.contains("arm64")) {
             copyFirstExisting(new File[] { new File(rootfsDir, "usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"), new File(rootfsDir, "lib/aarch64-linux-gnu/ld-linux-aarch64.so.1"), new File(rootfsDir, "lib/ld-linux-aarch64.so.1") }, new File(rootfsDir, "lib/ld-linux-aarch64.so.1"), true, true);
@@ -1250,10 +1068,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         throw new IllegalStateException("No candidate found for " + destination.getAbsolutePath());
-    }
-
-    private boolean isRootfsValid() {
-        return new File(rootfsDir, "bin/sh").exists() && new File(rootfsDir, "usr/bin/env").exists();
     }
 
     private String[] prootCommand(String command) {
@@ -1330,7 +1144,6 @@ public class MainActivity extends AppCompatActivity {
         if (statFile.exists()) procBindings += " -b " + statFile.getAbsolutePath() + ":/proc/stat";
         if (uptimeFile.exists()) procBindings += " -b " + uptimeFile.getAbsolutePath() + ":/proc/uptime";
         if (versionFile.exists()) procBindings += " -b " + versionFile.getAbsolutePath() + ":/proc/version";
-
         env.put("LD_LIBRARY_PATH", supportDir.getAbsolutePath());
         env.put("LIB_PATH", supportDir.getAbsolutePath());
         env.put("ROOT_PATH", baseDir.getAbsolutePath());
@@ -1339,7 +1152,9 @@ public class MainActivity extends AppCompatActivity {
         env.put("PROOT_TMP_DIR", new File(rootfsDir, "support").getAbsolutePath());
         env.put("PROOT_LOADER", new File(supportDir, "loader").getAbsolutePath());
         env.put("PROOT_LOADER_32", new File(supportDir, "loader32").getAbsolutePath());
-        env.put("EXTRA_BINDINGS", "-b " + getExternalFilesDir(null).getAbsolutePath() + ":/storage/internal -b " + supportDir.getAbsolutePath() + "/host_info.json:/support/common/host_info.json" + procBindings);
+        java.io.File extDir = getExternalFilesDir(null);
+        String extPath = extDir != null ? extDir.getAbsolutePath() : "/sdcard";
+        env.put("EXTRA_BINDINGS", "-b " + extPath + ":/storage/internal -b " + supportDir.getAbsolutePath() + "/host_info.json:/support/common/host_info.json" + procBindings);
         env.put("OS_VERSION", System.getProperty("os.version", "4.0.0"));
         return env;
     }
@@ -1358,215 +1173,12 @@ public class MainActivity extends AppCompatActivity {
                 while ((line = br.readLine()) != null) out.append(line).append('\n');
             }
             int code = p.waitFor();
-            if (code != 0) {
-                log("[RUNTIME TEST FAILED] " + out.toString().trim());
-                return false;
-            }
+            if (code != 0) { log("[RUNTIME TEST FAILED] " + out.toString().trim()); return false; }
             return out.toString().contains("PROOT_OK");
         } catch (Exception e) {
             log("[RUNTIME TEST ERROR] " + e.getMessage());
             return false;
         }
-    }
-
-    private void installHeroku() {
-        String dirName = herokuDirName();
-        String path = herokuPath();
-        startProcess("export HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color DEBIAN_FRONTEND=noninteractive && " +
-            "dpkg --remove --force-remove-reinstreq --force-depends dbus libpam-systemd systemd-resolved networkd-dispatcher dbus-user-session dconf-service dconf-gsettings-backend libgtk-3-common gsettings-desktop-schemas libgtk-3-bin libgtk-3-0t64 at-spi2-core libdecor-0-plugin-1-gtk 2>/dev/null || true && " +
-            "apt update && apt install -y --no-install-recommends ca-certificates coreutils git python3 python3-pip python3-venv build-essential libcairo2 libmagic1 openssl && " +
-            "cd /root && if [ ! -d " + dirName + " ]; then git clone https://github.com/coddrago/Heroku " + dirName + "; fi && " +
-            "cd " + path + " && python3 -m venv .venv && " +
-            ".venv/bin/python -m pip install --upgrade pip wheel setuptools && " +
-            ".venv/bin/python -m pip install -r requirements.txt && " +
-            ".venv/bin/python -c \"import hashlib; open('.requirements_hash','w').write(hashlib.sha256(open('requirements.txt','rb').read()).hexdigest())\"", false, true, false, "INSTALL HEROKU");
-    }
-
-    private void runDiagnostics() {
-        closeMenu();
-        runTask(() -> {
-            refreshProcessUiState();
-            log("[DIAG] Account: " + selectedSessionName());
-            log("[DIAG] Heroku path: " + herokuPath());
-            log("[DIAG] Android ABI: " + Build.SUPPORTED_ABIS[0]);
-            log("[DIAG] Linux rootfs: " + (isRootfsValid() ? "OK" : "missing/broken"));
-            log("[DIAG] Support assets: " + (new File(supportDir, "proot").exists() ? "OK" : "missing"));
-            log("[DIAG] Heroku repo: " + (new File(herokuRootfsDir(), "heroku").exists() ? "OK" : "missing"));
-            log("[DIAG] venv python: " + (fileExistsOrSymlink(new File(herokuRootfsDir(), ".venv/bin/python")) ? "OK" : "missing"));
-            log("[DIAG] inline bot: " + (isInlineBotUsernameValid(getInlineBotUsername()) ? "@" + getInlineBotUsername() : "not set"));
-            log("[DIAG] bot process: " + ((currentProcess != null && currentProcess.isAlive()) ? "running" : "stopped"));
-            try {
-                writeHostInfo();
-                log("[DIAG] host info: updated");
-            } catch (Exception e) {
-                log("[DIAG] host info error: " + e.getMessage());
-            }
-        });
-    }
-
-    private void repairRuntime() throws Exception {
-        closeMenu();
-        log("[REPAIR] Repairing Linux runtime files...");
-        if (!new File(supportDir, "execInProot.sh").exists()) installSupportAssets();
-        setupRootfs();
-        repairRootfs();
-        if (testProotRuntime()) {
-            log("[REPAIR] Runtime OK");
-        } else {
-            log("[REPAIR] Runtime still broken. Press DOWNLOAD LINUX if needed.");
-        }
-        refreshProcessUiState();
-    }
-
-    private void updateHeroku() {
-        closeMenu();
-        String path = herokuPath();
-        if (!isHerokuInstalledForSelectedAccount()) {
-            log("[ERROR] Heroku is not installed for account profile: " + selectedSessionName());
-            return;
-        }
-        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && cd " + path + " && " +
-            "git pull --ff-only || git pull && " +
-            ".venv/bin/python -m pip install -r requirements.txt && " +
-            "rm -f " + PATCH_MARKER + " && " +
-            herokuApkPatchCommand(), false, false, false, "UPDATE HEROKU");
-    }
-
-    private void reapplyPatches() {
-        closeMenu();
-        String path = herokuPath();
-        if (!isHerokuInstalledForSelectedAccount()) {
-            log("[ERROR] Heroku is not installed for account profile: " + selectedSessionName());
-            return;
-        }
-        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && cd " + path + " && " +
-            "rm -f " + PATCH_MARKER + " && " + herokuApkPatchCommand(), false, false, false, "REAPPLY PATCHES");
-    }
-
-    private void startInteractiveBot() {
-        closeMenu();
-        String inlineBot = getInlineBotUsername();
-        if (!isInlineBotUsernameValid(inlineBot)) {
-            askInlineBotUsername();
-            return;
-        }
-
-        if (!isHerokuInstalledForSelectedAccount()) {
-            log("[ERROR] Heroku is not installed for account profile: " + selectedSessionName());
-            log("[INFO] Press INSTALL HEROKU first for this account profile.");
-            return;
-        }
-
-        if (botSupervisorActive || (currentProcess != null && currentProcess.isAlive())) {
-            log("[INFO] Userbot is already running. Press STOP PROCESS first if you want to restart it.");
-            return;
-        }
-
-        manualStop = false;
-        botAutoRestartEnabled = true;
-        botSupervisorActive = true;
-        String path = herokuPath();
-        startProcess("export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 HEROKUAPK=1 HEROKU_CUSTOM_INLINE_BOT='" + inlineBot + "' && cd " + path + " && " +
-            herokuApkPatchCommand() + " && " +
-            ".venv/bin/python -u -m heroku --no-web --root", true, false, true, "START BOT", true);
-    }
-
-    private String cleanupStaleHerokuCommand() {
-        return "if [ -x /usr/bin/python3 ]; then /usr/bin/python3 - <<'PY'\n" +
-            "import os, signal, time\n" +
-            "me = os.getpid()\n" +
-            "parent = os.getppid()\n" +
-            "targets = []\n" +
-            "for name in os.listdir('/proc'):\n" +
-            "    if not name.isdigit():\n" +
-            "        continue\n" +
-            "    pid = int(name)\n" +
-            "    if pid in (me, parent):\n" +
-            "        continue\n" +
-            "    try:\n" +
-            "        comm = open(f'/proc/{pid}/comm', 'r').read().strip().lower()\n" +
-            "    except Exception:\n" +
-            "        continue\n" +
-            "    if 'python' not in comm:\n" +
-            "        continue\n" +
-            "    try:\n" +
-            "        cmd = open(f'/proc/{pid}/cmdline', 'rb').read().replace(b'\\0', b' ').decode('utf-8', 'ignore')\n" +
-            "    except Exception:\n" +
-            "        continue\n" +
-            "    low = cmd.lower()\n" +
-            "    if 'python' in low and (' -m heroku' in low or 'heroku.__main__' in low):\n" +
-            "        targets.append(pid)\n" +
-            "for sig in (signal.SIGTERM, signal.SIGKILL):\n" +
-            "    for pid in targets:\n" +
-            "        try:\n" +
-            "            os.kill(pid, sig)\n" +
-            "        except Exception:\n" +
-            "            pass\n" +
-            "    time.sleep(0.4)\n" +
-            "PY\n" +
-            "fi; true";
-    }
-
-    private void startTerminalSession() {
-        closeMenu();
-        followOutput = true;
-        if (followOutputBtn != null) followOutputBtn.setText("FOLLOW: ON");
-        manualStop = false;
-        botAutoRestartEnabled = false;
-        String path = herokuPath();
-        String terminalName = selectedTerminalName();
-        Process existing = terminalProcesses.get(terminalName);
-        if (existing != null && existing.isAlive()) {
-            log("[TERMINAL:" + terminalName + "] already running. Input will be sent there.");
-            refreshProcessUiState();
-            return;
-        }
-        startTerminalProcess(
-            terminalName,
-            "export HOME=/root PATH=" + path + "/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=xterm-256color PYTHONUNBUFFERED=1 && " +
-                "cd " + path + " 2>/dev/null || cd /root && " +
-                "echo '[TERMINAL:" + terminalName + "] Type commands below and press SEND' && /bin/sh -i"
-        );
-    }
-
-    private void startTerminalProcess(String terminalName, String command) {
-        runTask(() -> {
-            if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
-                log("[ERROR] Linux is not installed. Press LINUX first.");
-                return;
-            }
-            setupRootfs();
-            repairRootfs();
-            log("[TERMINAL:" + terminalName + "] starting");
-            ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
-            pb.directory(baseDir);
-            pb.environment().putAll(prootEnv());
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            terminalProcesses.put(terminalName, process);
-            refreshProcessUiState();
-            pumpOutput(process.getInputStream());
-            int code = process.waitFor();
-            if (terminalProcesses.get(terminalName) == process) terminalProcesses.remove(terminalName);
-            log("[TERMINAL:" + terminalName + "] exited code " + code);
-            refreshProcessUiState();
-        });
-    }
-
-    private void stopSelectedTerminal() {
-        closeMenu();
-        String terminalName = selectedTerminalName();
-        Process process = terminalProcesses.get(terminalName);
-        if (process == null || !process.isAlive()) {
-            log("[TERMINAL:" + terminalName + "] not running");
-            refreshProcessUiState();
-            return;
-        }
-        process.destroy();
-        try { process.destroyForcibly(); } catch (Exception ignored) {}
-        terminalProcesses.remove(terminalName);
-        log("[TERMINAL:" + terminalName + "] stopped");
-        refreshProcessUiState();
     }
 
     private String herokuApkPatchCommand() {
@@ -1701,339 +1313,98 @@ public class MainActivity extends AppCompatActivity {
             ".venv/bin/python hotfix_restart.py";
     }
 
-    private String hotfixFinalCommand() {
-        return "cat > hotfix_final.py <<'PY'\n" +
-            "from pathlib import Path\n" +
-            "import re\n" +
-            "platform = Path('heroku/utils/platform.py')\n" +
-            "s = platform.read_text()\n" +
-            "ram_func = '''def get_ram_usage() -> float:\n    \"\"\"Returns current process tree memory usage in MB\"\"\"\n    try:\n        import psutil\n        current_process = psutil.Process(os.getpid())\n        mem = current_process.memory_info()[0] / 2.0**20\n        for child in current_process.children(recursive=True):\n            mem += child.memory_info()[0] / 2.0**20\n        return round(mem, 1)\n    except Exception:\n        return 0\n'''\n" +
-            "cpu_func = '''def get_cpu_usage():\n    try:\n        import psutil\n        current_process = psutil.Process(os.getpid())\n        cpu = current_process.cpu_percent(interval=0.1)\n        for child in current_process.children(recursive=True):\n            try:\n                cpu += child.cpu_percent(interval=0)\n            except Exception:\n                pass\n        return f\"{cpu:.2f}\"\n    except Exception:\n        return \"0.00\"\n'''\n" +
-            "s = re.sub(r'def get_ram_usage\\(\\) -> float:.*?(?=\\n\\ndef get_cpu_usage)', ram_func, s, flags=re.S)\n" +
-            "s = re.sub(r'def get_cpu_usage\\(\\):.*?(?=\\n\\ninit_ts|\\n\\ndef get_ip_address|\\Z)', cpu_func, s, flags=re.S)\n" +
-            "platform.write_text(s)\n" +
-            "info = Path('heroku/modules/heroku_info.py')\n" +
-            "t = info.read_text()\n" +
-            "t = t.replace('platform = utils.get_named_platform()', 'platform = \"herokuapk\"')\n" +
-            "t = t.replace('platform_emoji = utils.get_named_platform_emoji()', 'platform_emoji = \"📱\"')\n" +
-            "for old in [\n" +
-            "    '\"cpu_usage\": _herokuapk_host_value(\"cpu_usage\", _herokuapk_safe_cpu_usage()),',\n" +
-            "    '\"cpu_usage\": _herokuapk_safe_cpu_usage(),',\n" +
-            "]:\n    t = t.replace(old, '\"cpu_usage\": utils.get_cpu_usage(),')\n" +
-            "for old in [\n" +
-            "    '\"ram_usage\": _herokuapk_host_value(\"ram_usage\", _herokuapk_safe_ram_usage()),',\n" +
-            "    '\"ram_usage\": _herokuapk_safe_ram_usage(),',\n" +
-            "]:\n    t = t.replace(old, '\"ram_usage\": f\"{utils.get_ram_usage()} MB\",')\n" +
-            "for old in [\n" +
-            "    '\"cpu\": _herokuapk_host_value(\"cpu\", _herokuapk_safe_cpu()),',\n" +
-            "    '\"cpu\": _herokuapk_safe_cpu(),',\n" +
-            "    '\"cpu\": f\"{psutil.cpu_count(logical=False)} ({psutil.cpu_count()}) core(-s); {psutil.cpu_percent()}% total\",',\n" +
-            "]:\n    t = t.replace(old, '\"cpu\": f\"{psutil.cpu_count(logical=False) or psutil.cpu_count()} ({psutil.cpu_count()}) core(-s); {utils.get_cpu_usage()}% total\",')\n" +
-            "t = re.sub(r'\\\"ping\\\": .*?,', '\"ping\": getattr(self, \"_herokuapk_last_ping\", round((time.perf_counter_ns() - start) / 10**6, 3)),', t)\n" +
-            "needle = '        start = time.perf_counter_ns()\\n        banner_url, force_web_media = self._get_effective_banner()\\n'\n" +
-            "insert = '        start = time.perf_counter_ns()\\n        if \"{ping}\" in self._get_effective_info_template():\\n            ping_start = time.perf_counter_ns()\\n            try:\\n                message = await utils.answer(message, self.config[\"ping_emoji\"])\\n                self._herokuapk_last_ping = round((time.perf_counter_ns() - ping_start) / 10**6, 3)\\n            except Exception:\\n                self._herokuapk_last_ping = 0\\n        banner_url, force_web_media = self._get_effective_banner()\\n'\n" +
-            "if '_herokuapk_last_ping' not in t and needle in t:\n    t = t.replace(needle, insert)\n" +
-            "info.write_text(t)\n" +
-            "test = Path('heroku/modules/test.py')\n" +
-            "q = test.read_text()\n" +
-            "start_idx = q.find('    @loader.command()\\n    async def ping(')\n" +
-            "end_idx = q.find('    async def client_ready', start_idx)\n" +
-            "if start_idx != -1 and end_idx != -1:\n" +
-            "    simple_ping = '''    @loader.command()\n    async def ping(self, message: Message):\n        \"\"\"- Find out your userbot ping\"\"\"\n        start = time.perf_counter_ns()\n        msg = await utils.answer(message, self.config[\"ping_emoji\"])\n        ping = round((time.perf_counter_ns() - start) / 10**6, 3)\n        await utils.answer(msg, f\"<b>Ping:</b> <code>{ping}</code> ms\\n<b>Uptime:</b> <code>{utils.formatted_uptime()}</code>\")\n\n'''\n" +
-            "    q = q[:start_idx] + simple_ping + q[end_idx:]\n" +
-            "    test.write_text(q)\n" +
-            "help_file = Path('heroku/modules/help.py')\n" +
-            "h = help_file.read_text()\n" +
-            "start_idx = h.find('    @loader.command(\\n        ru_doc=\"[args] | Помощь')\n" +
-            "end_idx = h.find('    @loader.command(\\n        ru_doc=\"| Ссылка', start_idx)\n" +
-            "if start_idx != -1 and end_idx != -1:\n" +
-            "    simple_help = '''    @loader.command(\n        ru_doc=\"[args] | Помощь с вашими модулями!\",\n        ua_doc=\"[args] | допоможіть з вашими модулями!\",\n        de_doc=\"[args] | Hilfe mit deinen Modulen!\",\n    )\n    async def help(self, message: Message):\n        \"\"\"[args] | help with your modules!\"\"\"\n        args = utils.get_args_raw(message)\n        if args:\n            await self.modhelp(message, args)\n            return\n        lines = []\n        for mod in self.allmodules.modules:\n            if not getattr(mod, \"commands\", None):\n                continue\n            try:\n                name = mod.strings[\"name\"]\n            except Exception:\n                name = getattr(mod, \"name\", mod.__class__.__name__)\n            cmds = sorted(mod.commands.keys())\n            if cmds:\n                lines.append(f\"<b>{utils.escape_html(str(name))}</b>: <code>{'</code> <code>'.join(cmds)}</code>\")\n        text = \"<b>Heroku modules:</b>\\n\" + \"\\n\".join(lines)\n        await utils.answer(message, text[:3900])\n\n'''\n" +
-            "    h = h[:start_idx] + simple_help + h[end_idx:]\n" +
-            "    help_file.write_text(h)\n" +
-            "PY\n" +
-            ".venv/bin/python hotfix_final.py";
-    }
-
-    private void startProcess(String command, boolean interactive) {
-        startProcess(command, interactive, false, false, command, false);
-    }
-
-    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess) {
-        startProcess(command, interactive, openSupportOnSuccess, false, command, false);
-    }
-
-    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart) {
-        startProcess(command, interactive, openSupportOnSuccess, autoRestart, command, false);
-    }
-
-    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart, String label) {
-        startProcess(command, interactive, openSupportOnSuccess, autoRestart, label, false);
-    }
-
-    private void startProcess(String command, boolean interactive, boolean openSupportOnSuccess, boolean autoRestart, String label, boolean cleanupBeforeFirstRun) {
-        runTask(() -> {
-            acquireWakeLock();
-            startHostMetricsWriter();
-            try { writeHostInfo(); } catch (Exception ignored) {}
-            if (!new File(supportDir, "execInProot.sh").exists() || !new File(rootfsDir, "bin/sh").exists()) {
-                log("[ERROR] Linux is not installed. Press LINUX first.");
-                return;
-            }
-            setupRootfs();
-            repairRootfs();
-            if (!testProotRuntime()) {
-                log("[ERROR] Linux rootfs is broken. Press LINUX again.");
-                if (autoRestart) botSupervisorActive = false;
-                return;
-            }
-            if (cleanupBeforeFirstRun) {
-                runCleanupBlocking();
-            }
-            boolean firstRun = true;
-            while (true) {
-                log((firstRun ? "[CMD] " : "[RESTART] ") + label);
-                ProcessBuilder pb = new ProcessBuilder(prootCommand(command));
-                pb.directory(baseDir);
-                pb.environment().putAll(prootEnv());
-                pb.redirectErrorStream(true);
-                Process process = pb.start();
-                currentProcess = process;
-                refreshProcessUiState();
-                pumpOutput(process.getInputStream());
-                int code = process.waitFor();
-                if (currentProcess == process) currentProcess = null;
-                refreshProcessUiState();
-                log("[EXIT] code " + code);
-                if (!interactive) log("[DONE] Command finished");
-                if (code == 0 && openSupportOnSuccess) {
-                    log("[INFO] Opening support chat @herokuapk");
-                    runOnUiThread(this::openSupportChat);
-                }
-                if (!(interactive && autoRestart && botAutoRestartEnabled && !manualStop)) break;
-                if (code == 126 || code == 127) {
-                    log("[ERROR] Startup command failed. Auto-restart stopped.");
-                    break;
-                }
-                if (code == 143 && manualStop) break;
-                log("[INFO] Userbot exited. Restarting in 3 seconds...");
-                try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
-                firstRun = false;
-            }
-            if (autoRestart) botSupervisorActive = false;
-            refreshProcessUiState();
-            releaseWakeLock();
-        });
-    }
-
-    private void runCleanupBlocking() {
-        try {
-            ProcessBuilder pb = new ProcessBuilder(prootCommand(cleanupStaleHerokuCommand()));
-            pb.directory(baseDir);
-            pb.environment().putAll(prootEnv());
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            process.waitFor();
-            log("[INFO] Stale userbot processes cleaned");
-        } catch (Exception e) {
-            log("[WARN] Cleanup failed: " + e.getMessage());
+    private void writeHostInfo() throws Exception {
+        supportDir.mkdirs();
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        ActivityManager.MemoryInfo mi = new ActivityManager.MemoryInfo();
+        long total = 0;
+        long avail = 0;
+        if (am != null) {
+            am.getMemoryInfo(mi);
+            total = mi.totalMem;
+            avail = mi.availMem;
         }
+        long usedMb = Math.max(total - avail, 0) / 1024 / 1024;
+        long totalMb = Math.max(total, 0) / 1024 / 1024;
+        double cpu = sampleCpuPercent();
+        String cpuPercent = cpu >= 0 ? String.format(java.util.Locale.US, "%.1f%%", cpu) : "N/A";
+        int cores = Runtime.getRuntime().availableProcessors();
+        String json = "{"
+            + "\"host\":\"herokuapk\","
+            + "\"cpu_usage\":\"" + cpuPercent + "\","
+            + "\"ram_usage\":\"" + usedMb + " MB\","
+            + "\"cpu\":\"" + cores + " (" + cores + ") core(-s); " + cpuPercent + " total\","
+            + "\"ram_total\":\"" + totalMb + " MB\""
+            + "}";
+        writeFile(new File(supportDir, "host_info.json"), json);
     }
 
-    private void pumpOutput(InputStream stream) {
-        new Thread(() -> {
-            try (InputStream in = stream) {
-                byte[] buffer = new byte[2048];
-                int read;
-                while ((read = in.read(buffer)) != -1) {
-                    appendOutput(new String(buffer, 0, read));
-                }
-            } catch (Exception e) {
-                log("[OUTPUT ERROR] " + e.getMessage());
-            }
-        }).start();
-    }
-
-    private void sendInput() {
-        String text = inputField.getText().toString();
-        inputField.setText("");
-        if (waitingForInlineBot) {
-            saveInlineBotUsername(text);
-            return;
-        }
-
-        if (waitingForSessionName) {
-            saveNewSession(text);
-            return;
-        }
-
-        if (waitingForTerminalName) {
-            saveNewTerminal(text);
-            return;
-        }
-
-        Process terminal = terminalProcesses.get(selectedTerminalName());
-        if (terminal != null && terminal.isAlive()) {
-            try {
-                OutputStream os = terminal.getOutputStream();
-                os.write((text + "\n").getBytes());
-                os.flush();
-                log("[INPUT -> " + selectedTerminalName() + "] sent");
-            } catch (Exception e) {
-                log("[INPUT ERROR] " + e.getMessage());
-            }
-            return;
-        }
-
-        if (currentProcess == null) {
-            log("[ERROR] No running process. Open a terminal session or start userbot first.");
-            return;
-        }
-        try {
-            OutputStream os = currentProcess.getOutputStream();
-            os.write((text + "\n").getBytes());
-            os.flush();
-            log("[INPUT] sent");
-        } catch (Exception e) {
-            log("[INPUT ERROR] " + e.getMessage());
-        }
-    }
-
-    private void stopCurrentProcess() {
-        closeMenu();
-        manualStop = true;
-        botAutoRestartEnabled = false;
-        botSupervisorActive = false;
-        if (currentProcess != null) {
-            currentProcess.destroy();
-            try { currentProcess.destroyForcibly(); } catch (Exception ignored) {}
-            log("[INFO] Process stopped");
-            currentProcess = null;
-        }
-        forceStopHerokuProcesses();
-        refreshProcessUiState();
-        releaseWakeLock();
-    }
-
-    private void forceStopHerokuProcesses() {
-        new Thread(() -> {
-            try {
-                if (!new File(supportDir, "proot").exists() || !new File(rootfsDir, "bin/sh").exists()) return;
-                ProcessBuilder pb = new ProcessBuilder(prootCommand(cleanupStaleHerokuCommand()));
-                pb.directory(baseDir);
-                pb.environment().putAll(prootEnv());
-                pb.redirectErrorStream(true);
-                Process process = pb.start();
-                process.waitFor();
-                log("[INFO] Stale userbot processes cleaned");
-            } catch (Exception e) {
-                log("[WARN] Cleanup failed: " + e.getMessage());
-            }
-        }).start();
-    }
-
-    private void copyLogs() {
-        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        clipboard.setPrimaryClip(ClipData.newPlainText("Heroku Host logs", logConsole.getText().toString()));
-        log("[INFO] Logs copied to clipboard");
-    }
-
-    private void clearLogs() {
-        runOnUiThread(() -> logConsole.setText("Logs cleared.\n"));
-        if (followOutput) scrollToBottomSoon();
-        refreshProcessUiState();
-    }
-
-    private void openSupportChat() {
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(SUPPORT_URL));
-            startActivity(intent);
-        } catch (Exception e) {
-            log("[WARN] Could not open support chat: " + e.getMessage());
-            log("[INFO] Support: " + SUPPORT_URL);
-        }
-    }
-
-    private void openGithubRepo() {
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL));
-            startActivity(intent);
-        } catch (Exception e) {
-            log("[WARN] Could not open GitHub: " + e.getMessage());
-        }
-    }
-
-    private void openLatestRelease() {
-        try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_RELEASES_URL));
-            startActivity(intent);
-        } catch (Exception e) {
-            log("[WARN] Could not open releases: " + e.getMessage());
-            openGithubRepo();
-        }
-    }
-
-    private File inlineBotFile() {
-        String profile = selectedSessionName();
-        if (profile.equals("main")) return new File(baseDir, "inline_bot_username.txt");
-        return new File(baseDir, "inline_bot_username-" + profile + ".txt");
-    }
-
-    private String getInlineBotUsername() {
-        try {
-            File file = inlineBotFile();
-            if (!file.exists()) return "";
-            byte[] data = new byte[(int) file.length()];
-            try (FileInputStream in = new FileInputStream(file)) {
-                int read = in.read(data);
-                if (read <= 0) return "";
-            }
-            return new String(data).trim().replace("@", "");
+    private double sampleCpuPercent() {
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream("/proc/stat")))) {
+            String line = br.readLine();
+            if (line == null || !line.startsWith("cpu ")) return lastCpuPercent;
+            String[] parts = line.trim().split("\\s+");
+            long user = Long.parseLong(parts[1]);
+            long nice = Long.parseLong(parts[2]);
+            long system = Long.parseLong(parts[3]);
+            long idle = Long.parseLong(parts[4]);
+            long iowait = parts.length > 5 ? Long.parseLong(parts[5]) : 0;
+            long irq = parts.length > 6 ? Long.parseLong(parts[6]) : 0;
+            long softirq = parts.length > 7 ? Long.parseLong(parts[7]) : 0;
+            long steal = parts.length > 8 ? Long.parseLong(parts[8]) : 0;
+            long idleAll = idle + iowait;
+            long totalAll = user + nice + system + idle + iowait + irq + softirq + steal;
+            if (lastCpuTotal == 0) { lastCpuTotal = totalAll; lastCpuIdle = idleAll; return lastCpuPercent; }
+            long totalDelta = totalAll - lastCpuTotal;
+            long idleDelta = idleAll - lastCpuIdle;
+            lastCpuTotal = totalAll;
+            lastCpuIdle = idleAll;
+            if (totalDelta <= 0) return lastCpuPercent;
+            lastCpuPercent = Math.max(0, Math.min(100, (totalDelta - idleDelta) * 100.0 / totalDelta));
+            return lastCpuPercent;
         } catch (Exception ignored) {
-            return "";
+            return sampleTopCpuPercent();
         }
     }
 
-    private boolean isInlineBotUsernameValid(String username) {
-        if (username == null) return false;
-        username = username.trim().replace("@", "");
-        if (username.length() <= 4 || !username.toLowerCase().endsWith("bot")) return false;
-        for (int i = 0; i < username.length(); i++) {
-            char ch = username.charAt(i);
-            boolean ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
-            if (!ok) return false;
-        }
-        return true;
-    }
-
-    private void askInlineBotUsername() {
-        waitingForInlineBot = true;
-        runOnUiThread(() -> {
-            inputField.setText("");
-            inputField.setHint("inline bot username, e.g. my_cool_bot");
-        });
-        refreshProcessUiState();
-        log("[SETUP] Enter inline bot username first. It must end with 'bot'.");
-        log("[SETUP] Create it in @BotFather if you don't have one, then type username below and press SEND.");
-    }
-
-    private void saveInlineBotUsername(String username) {
-        username = username == null ? "" : username.trim().replace("@", "");
-        if (!isInlineBotUsernameValid(username)) {
-            log("[ERROR] Invalid inline bot username. Use only a-z, 0-9, _, and it must end with bot.");
-            askInlineBotUsername();
-            return;
-        }
+    private double sampleTopCpuPercent() {
         try {
-            writeFile(inlineBotFile(), username + "\n");
-            waitingForInlineBot = false;
-            log("[OK] Inline bot username saved: @" + username);
-            startInteractiveBot();
-        } catch (Exception e) {
-            log("[ERROR] Failed to save inline bot username: " + e.getMessage());
-        }
+            Process process = new ProcessBuilder("/system/bin/top", "-b", "-n", "1").redirectErrorStream(true).start();
+            try (BufferedReader br = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String lower = line.toLowerCase(java.util.Locale.US);
+                    if (lower.contains("%cpu") || lower.startsWith("cpu") || lower.contains(" cpu ")) {
+                        double parsed = parseFirstPercentNumber(line);
+                        if (parsed >= 0) { lastCpuPercent = Math.max(0, Math.min(100, parsed)); return lastCpuPercent; }
+                    }
+                }
+            }
+            process.waitFor();
+        } catch (Exception ignored) {}
+        return lastCpuPercent;
     }
 
-    private void copy(InputStream in, OutputStream out) throws Exception {
+    private double parseFirstPercentNumber(String line) {
+        ArrayList<Double> values = new ArrayList<>();
+        for (int i = 0; i < line.length(); i++) {
+            if (line.charAt(i) != '%') continue;
+            int start = i - 1;
+            while (start >= 0) {
+                char ch = line.charAt(start);
+                if ((ch >= '0' && ch <= '9') || ch == '.') start--;
+                else break;
+            }
+            if (start + 1 < i) {
+                try { values.add(Double.parseDouble(line.substring(start + 1, i))); } catch (Exception ignored) {}
+            }
+        }
+        if (values.isEmpty()) return -1;
+        if (values.get(0) > 100 && values.size() > 2) return values.get(1) + values.get(2);
+        return values.get(0);
+    }
+
+    private void copy(InputStream in, java.io.OutputStream out) throws Exception {
         byte[] buf = new byte[1024 * 64];
         int len;
         while ((len = in.read(buf)) != -1) out.write(buf, 0, len);

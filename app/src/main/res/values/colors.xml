@@ -11,4 +11,25 @@
     <color name="zov_muted_soft">#B5A98B</color>
     <color name="zov_info">#8BD3FF</color>
     <color name="zov_danger">#FF6B6B</color>
+    <!-- Blue palette for simplified UI -->
+    <color name="blue_darkest">#060E1A</color>
+    <color name="blue_dark">#0A1628</color>
+    <color name="blue_mid">#0E2240</color>
+    <color name="blue_light">#1B4B8A</color>
+    <color name="blue_bright">#2E75C5</color>
+    <color name="blue_accent">#5BA3E8</color>
+    <color name="white_soft">#E8F4FF</color>
+    <!-- Background: static dark bottom + subtle shimmering top -->
+    <color name="bg_bottom">#050B14</color>
+    <color name="bg_mid">#0A1A30</color>
+    <color name="bg_top_a">#112844</color>
+    <color name="bg_top_b">#1B3A63</color>
+    <color name="cancel_blue">#2E75C5</color>
+    <!-- Action buttons: teal / coral / blue (used by BlueButton* / update overlay) -->
+    <color name="btn_start">#14B8A6</color>
+    <color name="btn_stop">#F87171</color>
+    <color name="btn_restart">#3B82F6</color>
+    <!-- Tonal context buttons (all-blue, glassy) -->
+    <color name="btn_tonal">#402E75C5</color>
+    <color name="btn_tonal_stroke">#665BA3E8</color>
 </resources>

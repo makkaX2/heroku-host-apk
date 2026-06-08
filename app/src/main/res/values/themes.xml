@@ -1,49 +1,64 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.ZovHost" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/zov_yellow</item>
-        <item name="colorPrimaryVariant">@color/zov_yellow</item>
-        <item name="colorOnPrimary">@color/zov_bg</item>
-        <item name="android:statusBarColor">@color/zov_bg</item>
-        <item name="android:navigationBarColor">@color/zov_bg</item>
-        <item name="android:windowBackground">@color/zov_bg</item>
+        <item name="colorPrimary">@color/blue_bright</item>
+        <item name="colorPrimaryVariant">@color/blue_light</item>
+        <item name="colorOnPrimary">@color/white_soft</item>
+        <item name="android:statusBarColor">@color/bg_top_a</item>
+        <item name="android:navigationBarColor">@color/bg_bottom</item>
+        <item name="android:windowBackground">@color/bg_bottom</item>
     </style>
 
-    <style name="ZovButtonBase" parent="Widget.MaterialComponents.Button">
-        <item name="android:layout_height">46dp</item>
+    <style name="BlueButtonBase" parent="Widget.MaterialComponents.Button">
+        <item name="android:layout_height">56dp</item>
         <item name="android:fontFamily">monospace</item>
         <item name="android:textAllCaps">true</item>
         <item name="android:textStyle">bold</item>
-        <item name="cornerRadius">14dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="cornerRadius">28dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="android:textColor">@android:color/white</item>
+    </style>
+
+    <style name="BlueButtonStart" parent="BlueButtonBase">
+        <item name="backgroundTint">@color/btn_start</item>
+    </style>
+
+    <style name="BlueButtonStop" parent="BlueButtonBase">
+        <item name="backgroundTint">@color/btn_stop</item>
+    </style>
+
+    <style name="BlueButtonRestart" parent="BlueButtonBase">
+        <item name="backgroundTint">@color/btn_restart</item>
+    </style>
+
+    <!-- Tonal context buttons (all-blue, glassy, icon above label) -->
+    <style name="ContextButtonBase" parent="Widget.MaterialComponents.Button">
+        <item name="backgroundTint">@color/btn_tonal</item>
+        <item name="strokeColor">@color/btn_tonal_stroke</item>
+        <item name="strokeWidth">1dp</item>
+        <item name="android:textColor">@color/white_soft</item>
+        <item name="iconTint">@color/white_soft</item>
+        <item name="iconGravity">top</item>
+        <item name="iconPadding">2dp</item>
+        <item name="iconSize">26dp</item>
+        <item name="cornerRadius">18dp</item>
+        <item name="elevation">0dp</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:minWidth">0dp</item>
         <item name="android:insetTop">0dp</item>
         <item name="android:insetBottom">0dp</item>
     </style>
 
-    <style name="ZovButtonPrimary" parent="ZovButtonBase">
-        <item name="backgroundTint">@color/zov_yellow</item>
-        <item name="android:textColor">@color/zov_bg</item>
+    <style name="ContextButtonBig" parent="ContextButtonBase">
+        <item name="android:textSize">15sp</item>
     </style>
 
-    <style name="ZovButtonSoft" parent="ZovButtonBase">
-        <item name="backgroundTint">@color/zov_yellow_soft</item>
-        <item name="android:textColor">@color/zov_bg</item>
-    </style>
-
-    <style name="ZovButtonInfo" parent="ZovButtonBase">
-        <item name="backgroundTint">@color/zov_info</item>
-        <item name="android:textColor">@color/zov_bg</item>
-    </style>
-
-    <style name="ZovButtonDanger" parent="ZovButtonBase">
-        <item name="backgroundTint">@color/zov_danger</item>
-        <item name="android:textColor">@color/zov_bg</item>
-    </style>
-
-    <style name="ZovSectionTitle">
-        <item name="android:textColor">@color/zov_yellow</item>
-        <item name="android:textSize">12sp</item>
-        <item name="android:fontFamily">monospace</item>
-        <item name="android:textStyle">bold</item>
-        <item name="android:letterSpacing">0.08</item>
+    <style name="ContextButtonRow" parent="ContextButtonBase">
+        <item name="android:textSize">13sp</item>
     </style>
 </resources>
